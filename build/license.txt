@@ -1,0 +1,34 @@
+Manim Studio Render Agent
+=========================
+
+This is an official companion app for Manim Studio (https://manim-std.vercel.app).
+
+WHAT THIS APP IS
+-----------------
+A small background helper that renders your Manim Studio videos locally,
+on this computer, using a bundled copy of Python, Manim, LaTeX, and
+FFmpeg. It is detected automatically by the Manim Studio website when it
+is running, and is only used when you choose local rendering there.
+
+WHAT THIS APP DOES
+--------------------
+- Listens on an encrypted local connection (wss://127.0.0.1) that only
+  the Manim Studio website can talk to from your browser.
+- Runs `manim render` on scenes sent from your browser tab and reports
+  progress back to it.
+- Serves the finished video back to your browser tab over a local,
+  encrypted connection — the video never goes anywhere else.
+- Runs quietly in the system tray. Open its status window any time from
+  the tray icon to see what it's doing.
+- Can check for updates to itself, and, if you sign in with your Manim
+  Studio account, show notifications published by Manim Studio.
+
+WHAT THIS APP DOES NOT DO
+----------------------------
+- It does not modify any other application on this computer.
+- It does not upload your videos or projects anywhere; rendering happens
+  entirely on this machine.
+- It does not run without being installed and launched by you, and it can
+  be fully removed via Windows' "Add or remove programs" at any time.
+
+By clicking Install, you agree to run this software on this computer.

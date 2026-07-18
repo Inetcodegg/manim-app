@@ -1,0 +1,8 @@
+node_modules/
+dist/
+release/
+.build-cache/
+resources/runtime/
+*.log
+.env
+src/shared/firebaseConfig.generated.ts
