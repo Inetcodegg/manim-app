@@ -56,9 +56,16 @@ const FFMPEG_LINUX_URL = "https://johnvansickle.com/ffmpeg/releases/ffmpeg-relea
 const BROWSER_UA = "Mozilla/5.0 (manim-studio-render-agent build script)";
 
 const LATEX_PACKAGES = [
-  "amsmath", "amsfonts", "amssymb", "babel-english", "cbfonts", "cm-super",
-  "ctex", "doublestroke", "dvisvgm", "everysel", "fontspec", "frcursive",
-  "gnu-freefont", "jknapltx", "latex-bin", "mathastext", "microtype",
+  // note: amssymb.sty ships inside the amsfonts package itself — there is
+  // no separate "amssymb" tlmgr package, so it's intentionally not listed.
+  // note: "ctex" (CJK/Chinese typesetting support) is intentionally
+  // dropped — it alone pulls in ~1GB+ of CJK fonts and the uptex/ptex/
+  // platex engine variants as dependencies (cbfonts, gnu-freefont,
+  // wadalab, arphic, fandol, etc.), none of which are needed unless
+  // scenes render Chinese/Japanese/Korean text.
+  "amsmath", "amsfonts", "babel-english", "cm-super",
+  "doublestroke", "dvisvgm", "everysel", "fontspec", "frcursive",
+  "jknapltx", "latex-bin", "mathastext", "microtype",
   "multitoc", "physics", "prelim2e", "preview", "ragged2e", "relsize",
   "rsfs", "setspace", "standalone", "tipa", "wasy", "wasysym", "xcolor",
   "xetex", "xkeyval",
@@ -268,7 +275,14 @@ async function preparePython() {
   }
 }
 
-async function prepareLatexWindows(latexDir, binMarker) {
+// TinyTeX's own launcher scripts (tlmgr.bat on Windows, tlmgr's Unix
+// counterpart) locate the rest of the distro by walking up from their OWN
+// path, hard-coded to expect this exact platform-triplet subfolder name
+// under bin/ — so we preserve TinyTeX's native layout as-is instead of
+// flattening it. Must match paths.ts's latexBinSubdir().
+const LATEX_BIN_SUBDIR = IS_WINDOWS ? "windows" : IS_MAC ? "universal-darwin" : "x86_64-linux";
+
+async function prepareLatexWindows(latexDir) {
   log("resolving latest TinyTeX release…");
   const release = await fetchJson(TINYTEX_RELEASES_API);
   // the plain cross-platform zip (e.g. "TinyTeX-v2026.07.zip") bundles
@@ -286,10 +300,10 @@ async function prepareLatexWindows(latexDir, binMarker) {
   extractZip(zip, extractDir);
   const found = findFileRecursive(extractDir, "latex.exe");
   if (!found) throw new Error("Could not locate latex.exe inside the extracted TinyTeX archive.");
-  return normalizeLatexLayout(found, extractDir, latexDir, binMarker);
+  return installLatexFromExtracted(found, extractDir, latexDir);
 }
 
-async function prepareLatexUnix(latexDir, binMarker) {
+async function prepareLatexUnix(latexDir) {
   log("resolving latest TinyTeX release…");
   const release = await fetchJson(TINYTEX_RELEASES_API);
   const namePattern = IS_MAC
@@ -307,36 +321,45 @@ async function prepareLatexUnix(latexDir, binMarker) {
   extractTar(tarball, extractDir);
   const found = findFileRecursive(extractDir, "latex");
   if (!found) throw new Error("Could not locate the `latex` binary inside the extracted TinyTeX archive.");
-  return normalizeLatexLayout(found, extractDir, latexDir, binMarker);
+  return installLatexFromExtracted(found, extractDir, latexDir);
 }
 
-/** Normalizes whatever internal nesting TinyTeX ships (its bin dir is
- *  named e.g. bin/windows, bin/x86_64-darwin, bin/x86_64-linux depending
- *  on platform) into a fixed runtime/latex/bin layout, so paths.ts and
- *  the app never need to know TinyTeX's internal naming. */
-function normalizeLatexLayout(found, extractDir, latexDir, binMarker) {
-  fs.mkdirSync(path.dirname(binMarker), { recursive: true });
+/** Copies the extracted TinyTeX distro straight to runtime/latex, keeping
+ *  its native bin/<platform-triplet>/ layout intact (see LATEX_BIN_SUBDIR
+ *  above for why), then provisions packages via tlmgr. */
+function installLatexFromExtracted(found, extractDir, latexDir) {
   const distroRoot = path.resolve(found, "..", "..");
   fs.rmSync(latexDir, { recursive: true, force: true });
   fs.cpSync(distroRoot, latexDir, { recursive: true });
-  fs.rmSync(path.join(latexDir, "bin"), { recursive: true, force: true });
-  fs.renameSync(path.join(latexDir, path.relative(distroRoot, found)), path.join(latexDir, "bin"));
   fs.rmSync(extractDir, { recursive: true, force: true });
 
+  const binDir = path.join(latexDir, "bin", LATEX_BIN_SUBDIR);
   if (!IS_WINDOWS) {
     // archives don't always preserve the executable bit through extraction.
-    for (const f of fs.readdirSync(path.join(latexDir, "bin"))) {
+    for (const f of fs.readdirSync(binDir)) {
       try {
-        fs.chmodSync(path.join(latexDir, "bin", f), 0o755);
+        fs.chmodSync(path.join(binDir, f), 0o755);
       } catch { /* not a regular file (e.g. a broken symlink target) */ }
     }
   }
 
-  log("installing LaTeX packages via tlmgr…");
-  const tlmgr = path.join(latexDir, "bin", IS_WINDOWS ? "tlmgr.bat" : "tlmgr");
+  const tlmgr = path.join(binDir, IS_WINDOWS ? "tlmgr.bat" : "tlmgr");
   if (fs.existsSync(tlmgr)) {
+    // TinyTeX's bundled tlmgr is often older than the live CTAN mirror it
+    // talks to, and tlmgr flatly refuses to install/update packages until
+    // it has self-updated first ("tlmgr itself needs to be updated").
+    log("self-updating tlmgr…");
     try {
-      execFileSync(tlmgr, ["install", ...LATEX_PACKAGES], { stdio: "inherit" });
+      execFileSync(tlmgr, ["update", "--self"], { stdio: "inherit", shell: IS_WINDOWS });
+    } catch (err) {
+      log(`tlmgr self-update reported an error (continuing): ${err.message}`);
+    }
+
+    log("installing LaTeX packages via tlmgr…");
+    try {
+      // .bat files aren't real executables — Windows needs a shell (cmd.exe)
+      // to interpret them; execFileSync throws EINVAL without shell:true here.
+      execFileSync(tlmgr, ["install", ...LATEX_PACKAGES], { stdio: "inherit", shell: IS_WINDOWS });
     } catch (err) {
       log(`tlmgr reported an error (continuing — some packages may already be present): ${err.message}`);
     }
@@ -345,16 +368,15 @@ function normalizeLatexLayout(found, extractDir, latexDir, binMarker) {
 
 async function prepareLatex() {
   const latexDir = path.join(RUNTIME_DIR, "latex");
-  const binMarker = path.join(latexDir, "bin");
   const latexBinName = IS_WINDOWS ? "latex.exe" : "latex";
-  if (fs.existsSync(path.join(binMarker, latexBinName))) {
+  if (fs.existsSync(path.join(latexDir, "bin", LATEX_BIN_SUBDIR, latexBinName))) {
     log("latex already prepared");
     return;
   }
   if (IS_WINDOWS) {
-    await prepareLatexWindows(latexDir, binMarker);
+    await prepareLatexWindows(latexDir);
   } else {
-    await prepareLatexUnix(latexDir, binMarker);
+    await prepareLatexUnix(latexDir);
   }
 }
 

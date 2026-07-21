@@ -1,4 +1,4 @@
-import { onAuthChange, signIn, signOutUser, currentIdToken } from "./firebase";
+import { onAuthChange, startDeviceCodeSignIn, signOutUser, currentIdToken, type DeviceCodeSession } from "./firebase";
 import { fetchNotifications, unseenCount, markAllSeen, type NotificationItem } from "./notifications";
 
 /**
@@ -45,32 +45,52 @@ function el<T extends HTMLElement>(id: string): T | null {
 
 // ---------------------------------------------------------------- account
 
+let activeDeviceSession: DeviceCodeSession | null = null;
+
 function renderAccountLoggedOut(errorMsg?: string): void {
+  activeDeviceSession?.cancel();
+  activeDeviceSession = null;
   const box = el<HTMLDivElement>("account-body");
   if (!box) return;
   box.innerHTML = `
     <p class="account-hint">Sign in with your Manim Studio account to see platform notifications here.</p>
-    <input id="acc-email" class="account-input" type="email" placeholder="Email" autocomplete="username" />
-    <input id="acc-password" class="account-input" type="password" placeholder="Password" autocomplete="current-password" />
     ${errorMsg ? `<p class="account-error">${escapeHtml(errorMsg)}</p>` : ""}
     <button id="acc-signin" class="account-btn">Sign in</button>
   `;
-  el<HTMLButtonElement>("acc-signin")?.addEventListener("click", () => void doSignIn());
-  el<HTMLInputElement>("acc-password")?.addEventListener("keydown", (e) => {
-    if (e.key === "Enter") void doSignIn();
-  });
+  el<HTMLButtonElement>("acc-signin")?.addEventListener("click", () => void startSignIn());
 }
 
-async function doSignIn(): Promise<void> {
-  const email = el<HTMLInputElement>("acc-email")?.value ?? "";
-  const password = el<HTMLInputElement>("acc-password")?.value ?? "";
-  const btn = el<HTMLButtonElement>("acc-signin");
-  if (btn) {
-    btn.textContent = "Signing in…";
-    btn.setAttribute("disabled", "true");
+function renderDeviceCode(code: string, siteApiBase: string): void {
+  const box = el<HTMLDivElement>("account-body");
+  if (!box) return;
+  const linkUrl = `${siteApiBase}/device`;
+  box.innerHTML = `
+    <p class="account-hint">Go to <a href="${escapeHtml(linkUrl)}" target="_blank" rel="noopener">${escapeHtml(linkUrl.replace(/^https?:\/\//, ""))}</a> and enter this code:</p>
+    <div class="account-device-code">${escapeHtml(code)}</div>
+    <p class="account-hint">Waiting for you to enter it…</p>
+    <button id="acc-cancel" class="account-btn-outline">Cancel</button>
+  `;
+  el<HTMLButtonElement>("acc-cancel")?.addEventListener("click", () => renderAccountLoggedOut());
+}
+
+async function startSignIn(): Promise<void> {
+  activeDeviceSession?.cancel();
+  const config = await window.agentStatus.config().catch(() => ({ firebaseConfigured: false, siteApiBase: "" }));
+  const session = await startDeviceCodeSignIn();
+  if ("error" in session) {
+    renderAccountLoggedOut(session.error);
+    return;
   }
-  const result = await signIn(email, password);
-  if (!result.ok) renderAccountLoggedOut(result.error);
+  activeDeviceSession = session;
+  renderDeviceCode(session.code, config.siteApiBase);
+  const result = await session.done;
+  if (activeDeviceSession !== session) return; // superseded by a newer attempt or cancelled
+  activeDeviceSession = null;
+  if (!result.ok) {
+    if (result.error) renderAccountLoggedOut(result.error);
+    // no error + not ok means the user cancelled — already re-rendered
+  }
+  // on success, onAuthChange's own listener re-renders the logged-in view
 }
 
 function renderAccountLoggedIn(email: string | null): void {

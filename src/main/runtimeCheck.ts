@@ -25,7 +25,12 @@ export interface RuntimeStatus {
 async function manimWorks(): Promise<boolean> {
   if (!fs.existsSync(pythonExe())) return false;
   try {
-    const result = await runCapture(pythonExe(), ["-c", "import manim, numpy; print('ok')"], { timeoutMs: 20_000 });
+    // a cold import of manim (which pulls in numpy, scipy, PIL, moderngl,
+    // etc.) can legitimately take longer than a few seconds on first run —
+    // disk cache is cold and antivirus real-time scanning inspects every
+    // newly-touched DLL/pyd the first time. 60s gives real slow-first-run
+    // machines room without masking an actually broken install.
+    const result = await runCapture(pythonExe(), ["-c", "import manim, numpy; print('ok')"], { timeoutMs: 60_000 });
     return result.code === 0 && result.stdout.includes("ok");
   } catch (err) {
     log.warn("manimWorks check failed:", String(err));
@@ -58,9 +63,13 @@ async function ffmpegWorks(): Promise<boolean> {
 
 export async function checkRuntime(): Promise<RuntimeStatus> {
   const [python, latex, ffmpeg] = await Promise.all([manimWorks(), latexWorks(), ffmpegWorks()]);
-  const detail: string[] = [];
-  if (!python) detail.push("Python/Manim did not respond — the install may be corrupted. Try reinstalling the app.");
-  if (!latex) detail.push("LaTeX did not respond — the install may be corrupted. Try reinstalling the app.");
-  if (!ffmpeg) detail.push("FFmpeg did not respond — the install may be corrupted. Try reinstalling the app.");
+  const failed = [
+    !python && "Python/Manim",
+    !latex && "LaTeX",
+    !ffmpeg && "FFmpeg",
+  ].filter((x): x is string => Boolean(x));
+  const detail = failed.length
+    ? [`${failed.join(", ")} did not respond. The install may be corrupted — try reinstalling the app.`]
+    : [];
   return { python, latex, ffmpeg, ready: python && latex && ffmpeg, detail };
 }

@@ -39,7 +39,7 @@
       if (hint) {
         if (!status.runtime.ready && status.runtime.detail && status.runtime.detail.length) {
           hint.style.display = "block";
-          hint.textContent = status.runtime.detail.join(" ");
+          hint.textContent = status.runtime.detail.join("\n");
         } else {
           hint.style.display = "none";
         }

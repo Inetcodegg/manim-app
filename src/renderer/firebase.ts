@@ -1,6 +1,6 @@
 import { initializeApp, getApps, type FirebaseApp } from "firebase/app";
 import {
-  getAuth, signInWithEmailAndPassword, signOut as firebaseSignOut,
+  getAuth, signInWithCustomToken, signOut as firebaseSignOut,
   onAuthStateChanged, browserLocalPersistence, setPersistence, type Auth, type User,
 } from "firebase/auth";
 import { FIREBASE_CONFIG, isFirebaseConfigured, SITE_API_BASE } from "../shared/firebaseConfig";
@@ -49,40 +49,86 @@ export function onAuthChange(fn: (user: User | null) => void): () => void {
   return onAuthStateChanged(a, fn);
 }
 
-function friendlyAuthError(code: string): string {
-  switch (code) {
-    case "auth/invalid-credential":
-    case "auth/wrong-password":
-    case "auth/user-not-found":
-      return "That email and password don't match an account.";
-    case "auth/too-many-requests":
-      return "Too many attempts — wait a bit and try again.";
-    case "auth/invalid-email":
-      return "That doesn't look like a valid email address.";
-    case "auth/network-request-failed":
-      return "Couldn't reach the sign-in server — check your internet connection.";
-    default:
-      return "Sign-in failed. Please try again.";
-  }
-}
-
 export interface SignInResult {
   ok: boolean;
   error?: string;
 }
 
-export async function signIn(email: string, password: string): Promise<SignInResult> {
+/**
+ * Device-code sign-in: shows a short code (from the website's
+ * /api/auth/device/start), polls /api/auth/device/poll until the user has
+ * entered it on manim-std.vercel.app/device while signed in there, then
+ * exchanges the resulting Firebase custom token for a real session here —
+ * same mechanism as any other Firebase Auth sign-in method
+ * (signInWithCustomToken), so onAuthStateChanged/getIdToken/persistence
+ * all keep working exactly as before. No password is ever typed into this
+ * app; the browser is the only place credentials are entered.
+ */
+export interface DeviceCodeSession {
+  code: string;
+  /** Cancels this session's polling — call when the status window closes
+   *  or the user starts a new sign-in attempt before this one finished. */
+  cancel: () => void;
+  /** Resolves once claimed+signed-in, or on expiry/cancel/error. */
+  done: Promise<SignInResult>;
+}
+
+export async function startDeviceCodeSignIn(): Promise<DeviceCodeSession | { error: string }> {
   const a = ensureAuth();
-  if (!a) return { ok: false, error: "This build isn't configured for sign-in." };
-  if (ready) await ready;
+  if (!a) return { error: "This build isn't configured for sign-in." };
+
+  let startRes: Response;
   try {
-    const cred = await signInWithEmailAndPassword(a, email.trim(), password);
-    await ensureProfile(cred.user);
-    return { ok: true };
-  } catch (err) {
-    const code = (err as { code?: string }).code ?? "";
-    return { ok: false, error: friendlyAuthError(code) };
+    startRes = await fetch(`${SITE_API_BASE}/api/auth/device/start`, { method: "POST" });
+  } catch {
+    return { error: "Couldn't reach the sign-in server — check your internet connection." };
   }
+  const startData = await startRes.json().catch(() => null);
+  if (!startRes.ok || !startData?.code || !startData?.deviceToken) {
+    return { error: startData?.error ?? "Could not start sign-in — try again." };
+  }
+  const { code, deviceToken, expiresIn } = startData as { code: string; deviceToken: string; expiresIn: number };
+
+  let cancelled = false;
+  const cancel = () => { cancelled = true; };
+
+  const done = (async (): Promise<SignInResult> => {
+    if (ready) await ready;
+    const deadline = Date.now() + expiresIn * 1000;
+    while (!cancelled && Date.now() < deadline) {
+      await new Promise((r) => setTimeout(r, 2000));
+      if (cancelled) break;
+      let pollRes: Response;
+      try {
+        pollRes = await fetch(`${SITE_API_BASE}/api/auth/device/poll`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ code, deviceToken }),
+        });
+      } catch {
+        continue; // transient network hiccup — keep polling until the deadline
+      }
+      const pollData = await pollRes.json().catch(() => null);
+      if (pollData?.status === "claimed" && pollData.customToken) {
+        try {
+          const cred = await signInWithCustomToken(a, pollData.customToken);
+          await ensureProfile(cred.user);
+          return { ok: true };
+        } catch {
+          return { ok: false, error: "Sign-in failed. Please try again." };
+        }
+      }
+      if (pollData?.status === "expired" || pollData?.status === "not-found") {
+        return { ok: false, error: "That code expired — click Sign in for a new one." };
+      }
+      // status "pending" — keep polling
+    }
+    return cancelled
+      ? { ok: false }
+      : { ok: false, error: "That code expired — click Sign in for a new one." };
+  })();
+
+  return { code, cancel, done };
 }
 
 export async function signOutUser(): Promise<void> {

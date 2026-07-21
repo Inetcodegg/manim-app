@@ -1,7 +1,7 @@
 {
   "name": "manim-studio-render-agent",
   "productName": "Manim Studio Render Agent",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "description": "Local render agent for Manim Studio — runs Manim on your own machine and connects to manim-std.vercel.app over a local WebSocket.",
   "private": true,
   "main": "dist/main/index.js",

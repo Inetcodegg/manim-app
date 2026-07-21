@@ -46,8 +46,20 @@ export function pythonExe(): string {
   return isWindows ? path.join(pythonDir(), "python.exe") : path.join(pythonDir(), "bin", "python3");
 }
 
+/** TinyTeX's own launcher scripts (tlmgr.bat on Windows, tlmgr's Unix
+ *  wrapper) locate the rest of the distro by walking up from their OWN
+ *  path, hard-coded to expect a specific platform-triplet subfolder name
+ *  under bin/ — so this can't be flattened to a fixed "latex/bin" across
+ *  platforms without breaking tlmgr. prepare-runtime.js preserves TinyTeX's
+ *  native layout for exactly this reason; this must match that layout. */
+function latexBinSubdir(): string {
+  if (isWindows) return "windows";
+  if (process.platform === "darwin") return "universal-darwin"; // TinyTeX ships one universal binary for mac, not per-arch
+  return "x86_64-linux";
+}
+
 export function latexBinDir(): string {
-  return path.join(runtimeDir(), "latex", "bin");
+  return path.join(runtimeDir(), "latex", "bin", latexBinSubdir());
 }
 
 export function latexExe(name: string): string {
