@@ -72,15 +72,20 @@ const STRINGS: Record<Lang, Dict> = {
     stat_renders: "Renders",
     stat_duration: "Total length",
     stat_size: "On disk",
-    runtime: "Render runtime",
+    runtime: "System status",
+    comp_engine: "Animation engine",
+    comp_math: "Math & formulas",
+    comp_video: "Video export",
     connection: "Connection",
     about: "What this app does",
     about_1: "Detected automatically by the Manim Studio site when it's open",
-    about_2: "Renders your scenes with Manim, entirely on this computer",
-    about_3: "Videos never leave this machine except back to your browser tab",
+    about_2: "Makes your animations right here on this computer",
+    about_3: "Your videos never leave this machine — they go straight to your browser",
     activity: "Recent activity",
     loading: "Loading…",
-    footer: "Closing this window keeps the agent running in the tray.",
+    loading_first: "Getting things ready — this can take a moment the first time.",
+    loading_almost: "Almost there…",
+    footer: "Closing this window keeps the app running in the background.",
     sign_in_hint: "Sign in with your Manim Studio account to see notifications here.",
     sign_in: "Sign in",
     sign_out: "Sign out",
@@ -88,8 +93,8 @@ const STRINGS: Record<Lang, Dict> = {
     device_hint: "Open {url} and enter this code:",
     device_waiting: "Waiting for you to enter it…",
     cancel: "Cancel",
-    not_configured: "This build isn't set up for sign-in.",
-    no_activity: "No activity yet.",
+    not_configured: "This version isn't set up for sign-in.",
+    no_activity: "Nothing here yet.",
     no_notifs: "No notifications yet.",
     update_found: "New version {v} found — downloading…",
     update_downloading: "Downloading update… {p}%",
@@ -98,6 +103,8 @@ const STRINGS: Record<Lang, Dict> = {
     none_yet: "None yet",
     minutes: "min",
     seconds: "sec",
+    all_ready: "Everything's ready",
+    setting_up: "Setting up…",
   },
   uz: {
     subtitle: "Lokal render agenti",
@@ -112,15 +119,20 @@ const STRINGS: Record<Lang, Dict> = {
     stat_renders: "Renderlar",
     stat_duration: "Umumiy uzunlik",
     stat_size: "Diskda",
-    runtime: "Render muhiti",
+    runtime: "Tizim holati",
+    comp_engine: "Animatsiya mexanizmi",
+    comp_math: "Matematika va formulalar",
+    comp_video: "Video eksport",
     connection: "Ulanish",
     about: "Bu ilova nima qiladi",
     about_1: "Manim Studio sayti ochilganda avtomatik aniqlanadi",
-    about_2: "Sahnalaringizni to'liq shu kompyuterda Manim bilan render qiladi",
-    about_3: "Videolar shu qurilmadan chiqmaydi — faqat brauzeringizga qaytadi",
+    about_2: "Animatsiyalaringizni to'liq shu kompyuterda tayyorlaydi",
+    about_3: "Videolaringiz qurilmadan chiqmaydi — to'g'ridan brauzeringizga boradi",
     activity: "So'nggi faoliyat",
     loading: "Yuklanyapti…",
-    footer: "Oynani yopsangiz ham ilova tray'da ishlab turadi.",
+    loading_first: "Tayyorlanyapti — birinchi marta biroz vaqt olishi mumkin.",
+    loading_almost: "Deyarli tayyor…",
+    footer: "Oynani yopsangiz ham ilova fonda ishlab turadi.",
     sign_in_hint: "Bildirishnomalarni ko'rish uchun Manim Studio hisobingiz bilan kiring.",
     sign_in: "Kirish",
     sign_out: "Chiqish",
@@ -129,7 +141,7 @@ const STRINGS: Record<Lang, Dict> = {
     device_waiting: "Kodni kiritishingizni kutyapmiz…",
     cancel: "Bekor qilish",
     not_configured: "Bu versiya kirish uchun sozlanmagan.",
-    no_activity: "Hozircha faoliyat yo'q.",
+    no_activity: "Hozircha hech narsa yo'q.",
     no_notifs: "Hozircha bildirishnoma yo'q.",
     update_found: "Yangi versiya {v} topildi — yuklanyapti…",
     update_downloading: "Yangilanish yuklanyapti… {p}%",
@@ -138,6 +150,8 @@ const STRINGS: Record<Lang, Dict> = {
     none_yet: "Hali yo'q",
     minutes: "daq",
     seconds: "son",
+    all_ready: "Hammasi tayyor",
+    setting_up: "Sozlanyapti…",
   },
 };
 
@@ -177,13 +191,12 @@ function setPill(ready: boolean): void {
 }
 
 let lastRuntime: RuntimeStatus | null = null;
+let firstCheckDone = false;
 
 async function refreshStatus(): Promise<void> {
   try {
     const status = await window.agentStatus.get();
     lastRuntime = status.runtime;
-    const portEl = el("port-info");
-    if (portEl) portEl.textContent = `wss://127.0.0.1:${status.port}`;
     setCheck("python", status.runtime.python);
     setCheck("latex", status.runtime.latex);
     setCheck("ffmpeg", status.runtime.ffmpeg);
@@ -197,17 +210,37 @@ async function refreshStatus(): Promise<void> {
         hint.style.display = "none";
       }
     }
+    // the very first check that comes back READY dismisses the loading
+    // overlay; if it comes back NOT ready we still dismiss (the status
+    // cards themselves explain what's wrong) so the user is never stuck
+    // staring at a spinner.
+    if (!firstCheckDone) { firstCheckDone = true; hideLoading(); }
   } catch { /* leave last-known values, retry next tick */ }
+}
 
-  try {
-    const log = await window.agentStatus.tailLog();
-    const logEl = el("log");
-    if (logEl) {
-      const atBottom = logEl.scrollTop + logEl.clientHeight >= logEl.scrollHeight - 4;
-      logEl.textContent = log || t("no_activity");
-      if (atBottom) logEl.scrollTop = logEl.scrollHeight;
-    }
-  } catch { /* ignore */ }
+// ============================================================ loading overlay
+
+function hideLoading(): void {
+  const overlay = el("loading");
+  if (!overlay) return;
+  overlay.classList.add("hide");
+  // remove from the layout after the fade so it never traps focus/scroll
+  setTimeout(() => { overlay.style.display = "none"; }, 550);
+}
+
+// while the first runtime check runs (a cold Python import can take ~30s on
+// first launch), reassure the user with a rotating message instead of a
+// silent spinner. Cleared as soon as the overlay is hidden.
+function startLoadingMessages(): void {
+  const sub = el("loading-sub");
+  if (!sub) return;
+  let step = 0;
+  const timer = setInterval(() => {
+    if (firstCheckDone) { clearInterval(timer); return; }
+    step++;
+    if (step === 1) sub.textContent = t("setting_up");
+    else if (step >= 3) sub.textContent = t("loading_almost");
+  }, 6000);
 }
 
 // ============================================================ stats
@@ -392,9 +425,15 @@ async function init(): Promise<void> {
   siteApiBase = config.siteApiBase;
 
   el<HTMLButtonElement>("lang-btn")?.addEventListener("click", switchLang);
-  el<HTMLButtonElement>("log-folder-btn")?.addEventListener("click", () => void window.agentShell.openLogsFolder());
 
-  // runtime + stats + log, on a poll
+  // show the loading overlay's reassuring messages until the first runtime
+  // check comes back (a cold Python import is slow on first launch)
+  startLoadingMessages();
+  // safety net: never let the overlay trap the user forever, even if the
+  // first check somehow never resolves
+  setTimeout(() => { if (!firstCheckDone) { firstCheckDone = true; hideLoading(); } }, 90000);
+
+  // runtime + stats, on a poll
   void refreshStatus();
   void refreshStats();
   setInterval(() => { void refreshStatus(); }, 4000);
