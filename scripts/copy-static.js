@@ -17,3 +17,15 @@ for (const file of fs.readdirSync(srcDir)) {
   fs.copyFileSync(path.join(srcDir, file), path.join(destDir, file));
 }
 console.log("Copied static renderer assets to dist/renderer");
+
+// The tray icon lives in build/ (a buildResources dir NOT bundled into the
+// installer — only dist/ is, per package.json's build.files). Copy it into
+// dist/assets so the packaged app can actually find it at runtime; without
+// this the tray shows a blank icon on installed builds.
+const assetsDest = path.join(__dirname, "..", "dist", "assets");
+fs.mkdirSync(assetsDest, { recursive: true });
+const trayIconSrc = path.join(__dirname, "..", "build", "tray-icon.png");
+if (fs.existsSync(trayIconSrc)) {
+  fs.copyFileSync(trayIconSrc, path.join(assetsDest, "tray-icon.png"));
+  console.log("Copied tray-icon.png to dist/assets");
+}

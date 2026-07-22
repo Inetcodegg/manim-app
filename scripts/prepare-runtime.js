@@ -273,6 +273,24 @@ async function preparePython() {
   } else {
     log("manim already installed and working");
   }
+
+  // Precompile every installed package to .pyc bytecode. Without this the
+  // FIRST `import manim` on the user's machine pays the full compile cost of
+  // manim + numpy + scipy + all their deps at once — measured at ~30s+ on a
+  // cold install, which blows past the runtime-check timeout and shows a
+  // false "Python didn't respond" error. Doing it here (once, at build time)
+  // means the shipped .pyc files are already present, so first import is fast.
+  log("precompiling Python bytecode (makes first import fast on the user's machine)…");
+  try {
+    execFileSync(pythonExe, ["-m", "compileall", "-q", "-j", "0", path.join(pythonDir, "Lib", "site-packages")], {
+      stdio: "inherit",
+    });
+  } catch (err) {
+    // compileall exits non-zero if ANY file fails to compile (some vendored
+    // deps ship intentionally-broken py2 files); that's harmless — the ones
+    // that matter still got compiled. Never fail the whole build over it.
+    log(`compileall reported non-fatal issues (continuing): ${err.message}`);
+  }
 }
 
 // TinyTeX's own launcher scripts (tlmgr.bat on Windows, tlmgr's Unix

@@ -1,22 +1,22 @@
-import { onAuthChange, startDeviceCodeSignIn, signOutUser, currentIdToken, type DeviceCodeSession } from "./firebase";
+import { onAuthChange, startDeviceCodeSignIn, signOutUser, currentIdToken, currentUserInfo, type DeviceCodeSession } from "./firebase";
 import { fetchNotifications, unseenCount, markAllSeen, type NotificationItem } from "./notifications";
 
 /**
  * The status window's browser-side entry point — bundled by
- * scripts/bundle-renderer.js (esbuild) into dist/renderer/app.js, since it
- * imports the Firebase SDK and needs real module resolution/bundling, not
- * just a tsc pass. Everything the plain (unbundled) status.js used to do
- * for runtime checks stays in status.js; this file owns the account +
- * notification-center + update-banner UI, all of it additive to the
- * original diagnostic view.
+ * scripts/bundle-renderer.js (esbuild) into dist/renderer/app.js. Owns the
+ * ENTIRE window now (runtime checks, account, notifications, stats, update
+ * banner, and English/Uzbek language switching) — the old split with a
+ * separate plain status.js was merged in so language switching can retitle
+ * every piece of UI from one place.
  */
 
 declare global {
   interface Window {
     agentStatus: {
-      get: () => Promise<{ runtime: { python: boolean; latex: boolean; ffmpeg: boolean; ready: boolean; detail: string[] }; port: number }>;
+      get: () => Promise<{ runtime: RuntimeStatus; port: number }>;
       tailLog: () => Promise<string>;
       config: () => Promise<{ firebaseConfigured: boolean; siteApiBase: string }>;
+      stats: () => Promise<RenderStats>;
     };
     agentUpdate: {
       check: () => Promise<unknown>;
@@ -24,11 +24,16 @@ declare global {
       install: () => Promise<void>;
       onStateChanged: (fn: (state: UpdateState) => void) => () => void;
     };
-    agentAuth: {
-      pushToken: (token: string | null) => Promise<void>;
+    agentAuth: { pushToken: (token: string | null) => Promise<void> };
+    agentShell: {
+      openLogsFolder: () => Promise<void>;
+      openExternal: (url: string) => Promise<void>;
     };
   }
 }
+
+interface RuntimeStatus { python: boolean; latex: boolean; ffmpeg: boolean; ready: boolean; detail: string[]; }
+interface RenderStats { totalRenders: number; totalSeconds: number; totalBytes: number; lastRenderAt: string | null; }
 
 type UpdateState =
   | { phase: "idle" }
@@ -42,105 +47,285 @@ type UpdateState =
 function el<T extends HTMLElement>(id: string): T | null {
   return document.getElementById(id) as T | null;
 }
-
-// ---------------------------------------------------------------- account
-
-let activeDeviceSession: DeviceCodeSession | null = null;
-
-function renderAccountLoggedOut(errorMsg?: string): void {
-  activeDeviceSession?.cancel();
-  activeDeviceSession = null;
-  const box = el<HTMLDivElement>("account-body");
-  if (!box) return;
-  box.innerHTML = `
-    <p class="account-hint">Sign in with your Manim Studio account to see platform notifications here.</p>
-    ${errorMsg ? `<p class="account-error">${escapeHtml(errorMsg)}</p>` : ""}
-    <button id="acc-signin" class="account-btn">Sign in</button>
-  `;
-  el<HTMLButtonElement>("acc-signin")?.addEventListener("click", () => void startSignIn());
-}
-
-function renderDeviceCode(code: string, siteApiBase: string): void {
-  const box = el<HTMLDivElement>("account-body");
-  if (!box) return;
-  const linkUrl = `${siteApiBase}/device`;
-  box.innerHTML = `
-    <p class="account-hint">Go to <a href="${escapeHtml(linkUrl)}" target="_blank" rel="noopener">${escapeHtml(linkUrl.replace(/^https?:\/\//, ""))}</a> and enter this code:</p>
-    <div class="account-device-code">${escapeHtml(code)}</div>
-    <p class="account-hint">Waiting for you to enter it…</p>
-    <button id="acc-cancel" class="account-btn-outline">Cancel</button>
-  `;
-  el<HTMLButtonElement>("acc-cancel")?.addEventListener("click", () => renderAccountLoggedOut());
-}
-
-async function startSignIn(): Promise<void> {
-  activeDeviceSession?.cancel();
-  const config = await window.agentStatus.config().catch(() => ({ firebaseConfigured: false, siteApiBase: "" }));
-  const session = await startDeviceCodeSignIn();
-  if ("error" in session) {
-    renderAccountLoggedOut(session.error);
-    return;
-  }
-  activeDeviceSession = session;
-  renderDeviceCode(session.code, config.siteApiBase);
-  const result = await session.done;
-  if (activeDeviceSession !== session) return; // superseded by a newer attempt or cancelled
-  activeDeviceSession = null;
-  if (!result.ok) {
-    if (result.error) renderAccountLoggedOut(result.error);
-    // no error + not ok means the user cancelled — already re-rendered
-  }
-  // on success, onAuthChange's own listener re-renders the logged-in view
-}
-
-function renderAccountLoggedIn(email: string | null): void {
-  const box = el<HTMLDivElement>("account-body");
-  if (!box) return;
-  box.innerHTML = `
-    <div class="account-row">
-      <span class="account-avatar">${escapeHtml((email || "?").charAt(0).toUpperCase())}</span>
-      <span class="account-email">${escapeHtml(email ?? "Signed in")}</span>
-      <button id="acc-signout" class="account-btn-outline">Sign out</button>
-    </div>
-  `;
-  el<HTMLButtonElement>("acc-signout")?.addEventListener("click", () => void signOutUser());
-}
-
 function escapeHtml(s: string): string {
   const div = document.createElement("div");
   div.textContent = s;
   return div.innerHTML;
 }
 
-// ----------------------------------------------------------- notifications
+// ============================================================ i18n
+
+type Lang = "en" | "uz";
+type Dict = Record<string, string>;
+
+const STRINGS: Record<Lang, Dict> = {
+  en: {
+    subtitle: "Local render agent",
+    checking: "Checking…",
+    checking_short: "checking…",
+    ready: "Ready",
+    needs_attention: "Needs attention",
+    working: "Working",
+    not_working: "Not working",
+    account: "Account",
+    stats_title: "Your renders",
+    stat_renders: "Renders",
+    stat_duration: "Total length",
+    stat_size: "On disk",
+    runtime: "Render runtime",
+    connection: "Connection",
+    about: "What this app does",
+    about_1: "Detected automatically by the Manim Studio site when it's open",
+    about_2: "Renders your scenes with Manim, entirely on this computer",
+    about_3: "Videos never leave this machine except back to your browser tab",
+    activity: "Recent activity",
+    loading: "Loading…",
+    footer: "Closing this window keeps the agent running in the tray.",
+    sign_in_hint: "Sign in with your Manim Studio account to see notifications here.",
+    sign_in: "Sign in",
+    sign_out: "Sign out",
+    signed_in: "Signed in",
+    device_hint: "Open {url} and enter this code:",
+    device_waiting: "Waiting for you to enter it…",
+    cancel: "Cancel",
+    not_configured: "This build isn't set up for sign-in.",
+    no_activity: "No activity yet.",
+    no_notifs: "No notifications yet.",
+    update_found: "New version {v} found — downloading…",
+    update_downloading: "Downloading update… {p}%",
+    update_ready: "Version {v} is ready.",
+    restart_update: "Restart & update",
+    none_yet: "None yet",
+    minutes: "min",
+    seconds: "sec",
+  },
+  uz: {
+    subtitle: "Lokal render agenti",
+    checking: "Tekshirilyapti…",
+    checking_short: "tekshirilyapti…",
+    ready: "Tayyor",
+    needs_attention: "Muammo bor",
+    working: "Ishlayapti",
+    not_working: "Ishlamayapti",
+    account: "Hisob",
+    stats_title: "Sizning renderlaringiz",
+    stat_renders: "Renderlar",
+    stat_duration: "Umumiy uzunlik",
+    stat_size: "Diskda",
+    runtime: "Render muhiti",
+    connection: "Ulanish",
+    about: "Bu ilova nima qiladi",
+    about_1: "Manim Studio sayti ochilganda avtomatik aniqlanadi",
+    about_2: "Sahnalaringizni to'liq shu kompyuterda Manim bilan render qiladi",
+    about_3: "Videolar shu qurilmadan chiqmaydi — faqat brauzeringizga qaytadi",
+    activity: "So'nggi faoliyat",
+    loading: "Yuklanyapti…",
+    footer: "Oynani yopsangiz ham ilova tray'da ishlab turadi.",
+    sign_in_hint: "Bildirishnomalarni ko'rish uchun Manim Studio hisobingiz bilan kiring.",
+    sign_in: "Kirish",
+    sign_out: "Chiqish",
+    signed_in: "Kirdingiz",
+    device_hint: "{url} manzilini oching va shu kodni kiriting:",
+    device_waiting: "Kodni kiritishingizni kutyapmiz…",
+    cancel: "Bekor qilish",
+    not_configured: "Bu versiya kirish uchun sozlanmagan.",
+    no_activity: "Hozircha faoliyat yo'q.",
+    no_notifs: "Hozircha bildirishnoma yo'q.",
+    update_found: "Yangi versiya {v} topildi — yuklanyapti…",
+    update_downloading: "Yangilanish yuklanyapti… {p}%",
+    update_ready: "{v} versiya tayyor.",
+    restart_update: "Qayta ishga tushirish",
+    none_yet: "Hali yo'q",
+    minutes: "daq",
+    seconds: "son",
+  },
+};
+
+let lang: Lang = (localStorage.getItem("lang") as Lang) || "uz";
+
+function t(key: string, vars?: Record<string, string | number>): string {
+  let s = STRINGS[lang][key] ?? STRINGS.en[key] ?? key;
+  if (vars) for (const [k, v] of Object.entries(vars)) s = s.replace(`{${k}}`, String(v));
+  return s;
+}
+
+/** Applies the current language to every element carrying data-i18n. */
+function applyStaticI18n(): void {
+  document.querySelectorAll<HTMLElement>("[data-i18n]").forEach((node) => {
+    const key = node.getAttribute("data-i18n");
+    if (key) node.textContent = t(key);
+  });
+  const langBtn = el<HTMLButtonElement>("lang-btn");
+  if (langBtn) langBtn.textContent = lang === "uz" ? "UZ" : "EN";
+}
+
+// ============================================================ runtime checks
+
+function setCheck(name: string, ok: boolean): void {
+  const icon = el(`icon-${name}`);
+  const value = el(`value-${name}`);
+  if (icon) { icon.className = `check-icon ${ok ? "ok" : "bad"}`; icon.textContent = ok ? "✓" : "✕"; }
+  if (value) { value.textContent = ok ? t("working") : t("not_working"); value.className = `check-value ${ok ? "ok" : "bad"}`; }
+}
+
+function setPill(ready: boolean): void {
+  const pill = el("pill");
+  const text = el("pill-text");
+  if (!pill || !text) return;
+  pill.className = `pill ${ready ? "ok" : "bad"}`;
+  text.textContent = ready ? t("ready") : t("needs_attention");
+}
+
+let lastRuntime: RuntimeStatus | null = null;
+
+async function refreshStatus(): Promise<void> {
+  try {
+    const status = await window.agentStatus.get();
+    lastRuntime = status.runtime;
+    const portEl = el("port-info");
+    if (portEl) portEl.textContent = `wss://127.0.0.1:${status.port}`;
+    setCheck("python", status.runtime.python);
+    setCheck("latex", status.runtime.latex);
+    setCheck("ffmpeg", status.runtime.ffmpeg);
+    setPill(status.runtime.ready);
+    const hint = el("hint");
+    if (hint) {
+      if (!status.runtime.ready && status.runtime.detail?.length) {
+        hint.style.display = "block";
+        hint.textContent = status.runtime.detail.join("\n");
+      } else {
+        hint.style.display = "none";
+      }
+    }
+  } catch { /* leave last-known values, retry next tick */ }
+
+  try {
+    const log = await window.agentStatus.tailLog();
+    const logEl = el("log");
+    if (logEl) {
+      const atBottom = logEl.scrollTop + logEl.clientHeight >= logEl.scrollHeight - 4;
+      logEl.textContent = log || t("no_activity");
+      if (atBottom) logEl.scrollTop = logEl.scrollHeight;
+    }
+  } catch { /* ignore */ }
+}
+
+// ============================================================ stats
+
+function fmtDuration(sec: number): { value: string; unit: string } {
+  if (sec <= 0) return { value: "0", unit: t("seconds") };
+  if (sec < 60) return { value: String(Math.round(sec)), unit: t("seconds") };
+  return { value: (sec / 60).toFixed(1), unit: t("minutes") };
+}
+function fmtSize(bytes: number): { value: string; unit: string } {
+  if (bytes <= 0) return { value: "0", unit: "MB" };
+  const mb = bytes / (1024 * 1024);
+  if (mb < 1000) return { value: mb.toFixed(mb < 10 ? 1 : 0), unit: "MB" };
+  return { value: (mb / 1024).toFixed(1), unit: "GB" };
+}
+
+async function refreshStats(): Promise<void> {
+  let stats: RenderStats;
+  try { stats = await window.agentStatus.stats(); } catch { return; }
+  const setStat = (id: string, value: string, unit?: string) => {
+    const node = el(id);
+    if (node) node.innerHTML = unit ? `${escapeHtml(value)}<span class="unit">${escapeHtml(unit)}</span>` : escapeHtml(value);
+  };
+  setStat("stat-count", String(stats.totalRenders));
+  const d = fmtDuration(stats.totalSeconds);
+  setStat("stat-duration", d.value, d.unit);
+  const s = fmtSize(stats.totalBytes);
+  setStat("stat-size", s.value, s.unit);
+}
+
+// ============================================================ account
+
+let activeDeviceSession: DeviceCodeSession | null = null;
+let siteApiBase = "";
+let firebaseConfigured = false;
+
+function renderAccountLoggedOut(errorMsg?: string): void {
+  activeDeviceSession?.cancel();
+  activeDeviceSession = null;
+  const box = el("account-body");
+  if (!box) return;
+  if (!firebaseConfigured) {
+    box.innerHTML = `<p class="account-hint">${escapeHtml(t("not_configured"))}</p>`;
+    return;
+  }
+  box.innerHTML = `
+    <p class="account-hint">${escapeHtml(t("sign_in_hint"))}</p>
+    ${errorMsg ? `<p class="account-error">${escapeHtml(errorMsg)}</p>` : ""}
+    <button id="acc-signin" class="account-btn">${escapeHtml(t("sign_in"))}</button>
+  `;
+  el<HTMLButtonElement>("acc-signin")?.addEventListener("click", () => void startSignIn());
+}
+
+function renderDeviceCode(code: string): void {
+  const box = el("account-body");
+  if (!box) return;
+  const linkUrl = `${siteApiBase}/device`;
+  const shortUrl = linkUrl.replace(/^https?:\/\//, "");
+  box.innerHTML = `
+    <p class="account-hint">${t("device_hint", { url: `<a href="#" id="acc-link">${escapeHtml(shortUrl)}</a>` })}</p>
+    <div class="account-device-code">${escapeHtml(code)}</div>
+    <p class="account-waiting"><span class="spinner"></span>${escapeHtml(t("device_waiting"))}</p>
+    <button id="acc-cancel" class="account-btn-outline" style="width:100%;">${escapeHtml(t("cancel"))}</button>
+  `;
+  el("acc-link")?.addEventListener("click", (e) => { e.preventDefault(); void window.agentShell.openExternal(linkUrl); });
+  el<HTMLButtonElement>("acc-cancel")?.addEventListener("click", () => renderAccountLoggedOut());
+}
+
+async function startSignIn(): Promise<void> {
+  activeDeviceSession?.cancel();
+  const session = await startDeviceCodeSignIn();
+  if ("error" in session) { renderAccountLoggedOut(session.error); return; }
+  activeDeviceSession = session;
+  renderDeviceCode(session.code);
+  const result = await session.done;
+  if (activeDeviceSession !== session) return;
+  activeDeviceSession = null;
+  if (!result.ok && result.error) renderAccountLoggedOut(result.error);
+}
+
+function renderAccountLoggedIn(email: string | null): void {
+  const box = el("account-body");
+  if (!box) return;
+  box.innerHTML = `
+    <div class="account-row">
+      <span class="account-avatar">${escapeHtml((email || "?").charAt(0).toUpperCase())}</span>
+      <span class="account-email">${escapeHtml(email ?? t("signed_in"))}</span>
+      <button id="acc-signout" class="account-btn-outline">${escapeHtml(t("sign_out"))}</button>
+    </div>
+  `;
+  el<HTMLButtonElement>("acc-signout")?.addEventListener("click", () => void signOutUser());
+}
+
+// ============================================================ notifications
 
 let notifItems: NotificationItem[] = [];
 
 function renderNotifications(): void {
-  const list = el<HTMLDivElement>("notif-list");
-  const badge = el<HTMLSpanElement>("notif-badge");
+  const list = el("notif-list");
+  const badge = el("notif-badge");
   if (!list) return;
   if (notifItems.length === 0) {
-    list.innerHTML = `<p class="notif-empty">No notifications yet.</p>`;
+    list.innerHTML = `<p class="notif-empty">${escapeHtml(t("no_notifs"))}</p>`;
   } else {
-    list.innerHTML = notifItems
-      .map((n) => `
-        <div class="notif-item notif-${n.kind}">
-          <div class="notif-item-title">${escapeHtml(n.title)}</div>
-          <div class="notif-item-body">${escapeHtml(n.body)}</div>
-          ${n.url ? `<a class="notif-item-link" href="${escapeHtml(n.url)}" target="_blank" rel="noopener">Learn more →</a>` : ""}
-        </div>
-      `)
-      .join("");
+    list.innerHTML = notifItems.map((n) => `
+      <div class="notif-item notif-${escapeHtml(n.kind)}">
+        <div class="notif-item-title">${escapeHtml(n.title)}</div>
+        <div class="notif-item-body">${escapeHtml(n.body)}</div>
+        ${n.url ? `<a class="notif-item-link" href="#" data-url="${escapeHtml(n.url)}">${lang === "uz" ? "Batafsil →" : "Learn more →"}</a>` : ""}
+      </div>`).join("");
+    list.querySelectorAll<HTMLAnchorElement>(".notif-item-link").forEach((a) => {
+      a.addEventListener("click", (e) => { e.preventDefault(); const u = a.getAttribute("data-url"); if (u) void window.agentShell.openExternal(u); });
+    });
   }
   const unseen = unseenCount(notifItems);
   if (badge) {
-    if (unseen > 0) {
-      badge.style.display = "inline-flex";
-      badge.textContent = String(unseen);
-    } else {
-      badge.style.display = "none";
-    }
+    if (unseen > 0) { badge.style.display = "inline-flex"; badge.textContent = String(unseen); }
+    else badge.style.display = "none";
   }
 }
 
@@ -149,40 +334,78 @@ async function refreshNotifications(): Promise<void> {
   renderNotifications();
 }
 
-// ----------------------------------------------------------------- update
+// ============================================================ update banner
+
+let lastUpdateState: UpdateState = { phase: "idle" };
 
 function renderUpdateBanner(state: UpdateState): void {
-  const banner = el<HTMLDivElement>("update-banner");
+  lastUpdateState = state;
+  const banner = el("update-banner");
   if (!banner) return;
   if (state.phase === "available" || state.phase === "checking") {
     banner.style.display = "flex";
-    banner.innerHTML = `<span>New version ${"version" in state ? state.version : ""} found — downloading…</span>`;
+    banner.innerHTML = `<span>${escapeHtml(t("update_found", { v: "version" in state ? state.version : "" }))}</span>`;
   } else if (state.phase === "downloading") {
     banner.style.display = "flex";
-    banner.innerHTML = `<span>Downloading update… ${state.percent}%</span>`;
+    banner.innerHTML = `<span>${escapeHtml(t("update_downloading", { p: state.percent }))}</span>`;
   } else if (state.phase === "downloaded") {
     banner.style.display = "flex";
-    banner.innerHTML = `<span>Version ${state.version} is ready.</span><button id="update-install" class="account-btn">Restart &amp; update</button>`;
+    banner.innerHTML = `<span>${escapeHtml(t("update_ready", { v: state.version }))}</span><button id="update-install" class="account-btn" style="width:auto;">${escapeHtml(t("restart_update"))}</button>`;
     el<HTMLButtonElement>("update-install")?.addEventListener("click", () => void window.agentUpdate.install());
   } else {
     banner.style.display = "none";
   }
 }
 
-// -------------------------------------------------------------------- init
+// ============================================================ language switch
+
+function switchLang(): void {
+  lang = lang === "uz" ? "en" : "uz";
+  localStorage.setItem("lang", lang);
+  applyStaticI18n();
+  // re-render every dynamic piece in the new language
+  if (lastRuntime) {
+    setCheck("python", lastRuntime.python);
+    setCheck("latex", lastRuntime.latex);
+    setCheck("ffmpeg", lastRuntime.ffmpeg);
+    setPill(lastRuntime.ready);
+  }
+  void refreshStats();
+  renderNotifications();
+  renderUpdateBanner(lastUpdateState);
+  // repaint the account view in the new language — but never disturb an
+  // in-flight device-code session (that would drop the code off screen)
+  if (!activeDeviceSession) {
+    const user = currentUserInfo();
+    if (user) renderAccountLoggedIn(user.email);
+    else renderAccountLoggedOut();
+  }
+}
+
+// ============================================================ init
 
 async function init(): Promise<void> {
-  const config = await window.agentStatus.config().catch(() => ({ firebaseConfigured: false, siteApiBase: "" }));
+  applyStaticI18n();
 
-  if (config.firebaseConfigured) {
+  const config = await window.agentStatus.config().catch(() => ({ firebaseConfigured: false, siteApiBase: "" }));
+  firebaseConfigured = config.firebaseConfigured;
+  siteApiBase = config.siteApiBase;
+
+  el<HTMLButtonElement>("lang-btn")?.addEventListener("click", switchLang);
+  el<HTMLButtonElement>("log-folder-btn")?.addEventListener("click", () => void window.agentShell.openLogsFolder());
+
+  // runtime + stats + log, on a poll
+  void refreshStatus();
+  void refreshStats();
+  setInterval(() => { void refreshStatus(); }, 4000);
+  setInterval(() => { void refreshStats(); }, 15000);
+
+  // account / auth
+  if (firebaseConfigured) {
     onAuthChange((user) => {
       if (user) {
         renderAccountLoggedIn(user.email);
         void refreshNotifications();
-        // push a fresh ID token to the main process now, and again on
-        // Firebase's own ~hourly refresh schedule — the main process needs
-        // this to sync completed-render metadata (see renderWorker.ts),
-        // but never runs the Auth SDK itself (no browser `window` there)
         void currentIdToken().then((token) => window.agentAuth.pushToken(token));
       } else {
         renderAccountLoggedOut();
@@ -191,23 +414,18 @@ async function init(): Promise<void> {
         void window.agentAuth.pushToken(null);
       }
     });
-    // Firebase ID tokens expire hourly; re-push periodically so a long-
-    // running status window (and thus a long-idle main process) doesn't
-    // end up syncing metadata with a stale/expired token
-    setInterval(() => {
-      void currentIdToken().then((token) => window.agentAuth.pushToken(token));
-    }, 20 * 60 * 1000);
+    setInterval(() => { void currentIdToken().then((token) => window.agentAuth.pushToken(token)); }, 20 * 60 * 1000);
   } else {
-    const box = el<HTMLDivElement>("account-body");
-    if (box) box.innerHTML = `<p class="account-hint">This build isn't configured for account sign-in.</p>`;
+    renderAccountLoggedOut();
   }
 
+  // update banner
   window.agentUpdate.onStateChanged(renderUpdateBanner);
-  const initialUpdateState = await window.agentUpdate.getState().catch(() => ({ phase: "idle" as const }));
-  renderUpdateBanner(initialUpdateState);
+  renderUpdateBanner(await window.agentUpdate.getState().catch(() => ({ phase: "idle" as const })));
 
-  const notifButton = el<HTMLButtonElement>("notif-bell");
-  const notifPanel = el<HTMLDivElement>("notif-panel");
+  // notification bell
+  const notifButton = el("notif-bell");
+  const notifPanel = el("notif-panel");
   notifButton?.addEventListener("click", () => {
     if (!notifPanel) return;
     const opening = notifPanel.style.display !== "block";
@@ -215,8 +433,13 @@ async function init(): Promise<void> {
     if (opening) markAllSeen(notifItems);
     renderNotifications();
   });
-
   setInterval(() => void refreshNotifications(), 5 * 60 * 1000);
 }
 
-void init();
+// app.js is loaded at the end of <body>, so the DOM is already parsed by
+// the time this runs — but guard anyway in case that ever changes.
+if (document.readyState === "loading") {
+  document.addEventListener("DOMContentLoaded", () => void init());
+} else {
+  void init();
+}

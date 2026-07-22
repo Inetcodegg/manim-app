@@ -1,9 +1,11 @@
-import { ipcMain } from "electron";
+import { ipcMain, shell } from "electron";
 import fs from "node:fs";
+import path from "node:path";
 import { checkRuntime } from "./runtimeCheck";
-import { logFile } from "./paths";
+import { logFile, userDataDir } from "./paths";
 import { onUpdateState, getUpdateState, checkForUpdates, installUpdateNow } from "./updater";
 import { setAuthToken } from "./authToken";
+import { listLibrary } from "./renderLibrary";
 import { DEFAULT_PORT } from "../shared/protocol";
 import { isFirebaseConfigured, SITE_API_BASE } from "../shared/firebaseConfig";
 
@@ -36,8 +38,32 @@ export function registerStatusApi(mainWindowSender: () => Electron.WebContents |
     siteApiBase: SITE_API_BASE,
   }));
 
+  // Render stats for the status window — derived live from the local
+  // render-library manifest (renderLibrary.ts), never from any server.
+  ipcMain.handle("status:stats", () => {
+    const entries = listLibrary();
+    const totalSeconds = entries.reduce((sum, e) => sum + (e.durationSeconds || 0), 0);
+    const totalBytes = entries.reduce((sum, e) => sum + (e.fileSizeBytes || 0), 0);
+    const last = entries[0]?.createdAt ?? null; // manifest keeps newest first
+    return { totalRenders: entries.length, totalSeconds, totalBytes, lastRenderAt: last };
+  });
+
   ipcMain.handle("auth:push-token", (_event, token: string | null) => {
     setAuthToken(token);
+  });
+
+  ipcMain.handle("shell:open-logs", () => {
+    try {
+      shell.showItemInFolder(path.join(userDataDir(), "agent.log"));
+    } catch { /* opening a folder failing is never worth surfacing */ }
+  });
+
+  ipcMain.handle("shell:open-external", (_event, url: string) => {
+    // only ever open http(s) — never let the renderer hand us a file:// or
+    // other scheme that could launch a local program.
+    if (typeof url === "string" && /^https?:\/\//.test(url)) {
+      void shell.openExternal(url);
+    }
   });
 
   ipcMain.handle("update:check", async () => {

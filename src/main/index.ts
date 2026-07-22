@@ -29,6 +29,16 @@ let tray: Tray | null = null;
 let statusWindow: BrowserWindow | null = null;
 let agent: AgentServer | null = null;
 
+/** The tray/window icon. In the PACKAGED app only dist/ ships (build/ is a
+ *  build-resources dir left out of the installer), so copy-static.js drops
+ *  a copy at dist/assets/tray-icon.png — __dirname is dist/main/ at runtime,
+ *  so that's ../assets. The build/ path is the dev (unpackaged) fallback. */
+function trayIconPath(): string {
+  const packaged = path.join(__dirname, "..", "assets", "tray-icon.png");
+  if (fs.existsSync(packaged)) return packaged;
+  return path.join(__dirname, "..", "..", "build", "tray-icon.png");
+}
+
 process.on("uncaughtException", (err) => {
   log.error("uncaughtException:", err.stack ?? String(err));
   updateTrayTooltip("Manim Studio Render Agent — an unexpected error occurred, see logs");
@@ -111,7 +121,7 @@ async function main(): Promise<void> {
 
 function createTray(): void {
   try {
-    const iconPath = path.join(__dirname, "..", "..", "build", "tray-icon.png");
+    const iconPath = trayIconPath();
     const image = fs.existsSync(iconPath)
       ? nativeImage.createFromPath(iconPath)
       : nativeImage.createEmpty();
@@ -198,7 +208,7 @@ function showStatusWindow(): void {
       minimizable: true,
       maximizable: false,
       title: "Manim Studio Render Agent",
-      icon: path.join(__dirname, "..", "..", "build", "tray-icon.png"),
+      icon: trayIconPath(),
       backgroundColor: "#0d0d10",
       webPreferences: {
         preload: path.join(__dirname, "..", "renderer", "preload.js"),
