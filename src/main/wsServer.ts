@@ -2,7 +2,7 @@ import https from "node:https";
 import { WebSocketServer, type WebSocket } from "ws";
 import { startRenderJob, type RenderJobHandle } from "./renderWorker";
 import { startVideoServer, videoUrlFor, type VideoRegistry } from "./videoServer";
-import { checkRuntime } from "./runtimeCheck";
+import { checkRuntime, type RuntimeStatus } from "./runtimeCheck";
 import { ensureTlsCert, type TlsCert } from "./tls";
 import {
   listLibrary, findLibraryEntry, libraryFilePath, deleteLibraryEntry, renameLibraryEntry,
@@ -55,6 +55,13 @@ export class AgentServer {
   private jobs = new Map<string, TrackedJob>();
   private sockets = new Set<WebSocket>();
   private tls: TlsCert | null = null;
+  // Cached runtime status. checkRuntime() can take 30–60s on a cold first
+  // run (Python import), and sending `hello` MUST be instant — the site
+  // drops the socket if it doesn't get a hello within a couple seconds. So
+  // hello answers from this cache immediately, and the check runs in the
+  // background, refreshing the cache and re-broadcasting hello when done.
+  private cachedRuntime: RuntimeStatus | null = null;
+  private runtimeCheckInFlight: Promise<RuntimeStatus> | null = null;
   private videoRegistry: VideoRegistry = {
     get: (id) => {
       // finished library entries take priority (the id format is distinct —
@@ -83,7 +90,7 @@ export class AgentServer {
     this.wss.on("connection", (socket) => {
       this.sockets.add(socket);
       log.info("browser tab connected");
-      void this.sendHello(socket);
+      this.sendHello(socket);
 
       socket.on("message", (raw) => {
         this.handleMessage(socket, raw.toString()).catch((err) => {
@@ -113,22 +120,50 @@ export class AgentServer {
     await new Promise<void>((resolve) => this.httpsServer?.close(() => resolve()));
   }
 
-  private async sendHello(socket: WebSocket): Promise<void> {
-    try {
-      const status = await checkRuntime();
-      const hello: ServerMessage = {
-        type: "hello",
-        agentVersion: AGENT_VERSION,
-        ready: status.ready,
-        setupStage: status.ready ? null : status.detail.join(" "),
-        setupProgress: null,
-        tlsFingerprint: this.tls?.fingerprint ?? "",
-      };
-      this.send(socket, hello);
-    } catch (err) {
-      log.error("failed to build hello message:", String(err));
-      this.send(socket, { type: "error", message: "Could not check the local render runtime." });
+  /** Runs the (possibly slow) runtime check at most once at a time, caches
+   *  the result, and re-broadcasts hello to every connected tab when it
+   *  finishes — so a tab that got an optimistic early hello learns the real
+   *  readiness a moment later without reconnecting. */
+  private refreshRuntime(): Promise<RuntimeStatus> {
+    if (this.runtimeCheckInFlight) return this.runtimeCheckInFlight;
+    this.runtimeCheckInFlight = checkRuntime()
+      .then((status) => {
+        const changed = this.cachedRuntime?.ready !== status.ready;
+        this.cachedRuntime = status;
+        // if readiness flipped, tell everyone (the first hello may have been
+        // an optimistic "assume ready" before the check completed)
+        if (changed) for (const s of this.sockets) this.sendHello(s);
+        return status;
+      })
+      .catch((err) => {
+        log.error("runtime check failed:", String(err));
+        return this.cachedRuntime ?? { python: false, latex: false, ffmpeg: false, ready: false, detail: [] };
+      })
+      .finally(() => { this.runtimeCheckInFlight = null; });
+    return this.runtimeCheckInFlight;
+  }
+
+  /** Sends hello INSTANTLY from cache — the site drops the socket if hello
+   *  is slow, and the first real check can take 30–60s. If we've never
+   *  checked yet, we optimistically report ready:true and kick off the
+   *  check; refreshRuntime() re-sends the corrected hello if it turns out
+   *  not ready. Rendering itself still re-verifies before it runs, so an
+   *  optimistic hello can never cause a broken render. */
+  private sendHello(socket: WebSocket): void {
+    const status = this.cachedRuntime;
+    if (!status) {
+      // never checked — answer optimistically NOW, verify in the background
+      void this.refreshRuntime();
     }
+    const hello: ServerMessage = {
+      type: "hello",
+      agentVersion: AGENT_VERSION,
+      ready: status ? status.ready : true,
+      setupStage: status && !status.ready ? status.detail.join(" ") : null,
+      setupProgress: null,
+      tlsFingerprint: this.tls?.fingerprint ?? "",
+    };
+    this.send(socket, hello);
   }
 
   private async handleMessage(socket: WebSocket, raw: string): Promise<void> {
@@ -142,7 +177,10 @@ export class AgentServer {
 
     switch (msg.type) {
       case "ping":
-        await this.sendHello(socket);
+        // a ping is the site re-checking readiness — refresh in the
+        // background so a not-ready→ready transition gets pushed out
+        void this.refreshRuntime();
+        this.sendHello(socket);
         return;
       case "start":
         await this.startJob(msg);
