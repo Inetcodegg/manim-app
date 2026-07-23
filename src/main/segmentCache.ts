@@ -42,7 +42,18 @@ export function cachedSegmentPath(hash: string, ext: string): string | null {
 export function saveSegmentToCache(hash: string, ext: string, sourceFile: string): string {
   fs.mkdirSync(segmentCacheDir(), { recursive: true });
   const dest = segmentCacheFile(hash, ext);
-  fs.copyFileSync(sourceFile, dest);
+  // Copy to a temp file then rename into place — rename is atomic on the same
+  // volume, so a crash/quit mid-copy can never leave a truncated file at
+  // `dest` that a later render would treat as a valid cache hit (size>0 is
+  // not a validity check) and feed a corrupt clip into ffmpeg.
+  const tmp = `${dest}.tmp-${process.pid}-${Date.now()}`;
+  try {
+    fs.copyFileSync(sourceFile, tmp);
+    fs.renameSync(tmp, dest);
+  } catch (err) {
+    try { fs.rmSync(tmp, { force: true }); } catch { /* temp cleanup best-effort */ }
+    throw err;
+  }
   evictIfOverBudget();
   return dest;
 }
@@ -56,11 +67,14 @@ function evictIfOverBudget(): void {
   let entries: { file: string; size: number; mtime: number }[];
   try {
     const dir = segmentCacheDir();
-    entries = fs.readdirSync(dir).map((name) => {
-      const full = path.join(dir, name);
-      const stat = fs.statSync(full);
-      return { file: full, size: stat.size, mtime: stat.mtimeMs };
-    });
+    entries = fs.readdirSync(dir)
+      // never touch in-progress temp copies (see saveSegmentToCache)
+      .filter((name) => !name.includes(".tmp-"))
+      .map((name) => {
+        const full = path.join(dir, name);
+        const stat = fs.statSync(full);
+        return { file: full, size: stat.size, mtime: stat.mtimeMs };
+      });
   } catch (err) {
     log.warn("segment cache eviction scan failed:", String(err));
     return;

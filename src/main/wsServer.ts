@@ -116,6 +116,13 @@ export class AgentServer {
         log.warn("error cancelling job during shutdown:", String(err));
       }
     }
+    // Forcibly close open browser sockets first — otherwise wss.close() waits
+    // for them to close on their own and its callback may never fire, hanging
+    // shutdown until the Quit handler's force-exit timer trips.
+    for (const socket of this.sockets) {
+      try { socket.terminate(); } catch { /* already gone */ }
+    }
+    this.sockets.clear();
     await new Promise<void>((resolve) => this.wss?.close(() => resolve()));
     await new Promise<void>((resolve) => this.httpsServer?.close(() => resolve()));
   }
@@ -128,10 +135,13 @@ export class AgentServer {
     if (this.runtimeCheckInFlight) return this.runtimeCheckInFlight;
     this.runtimeCheckInFlight = checkRuntime()
       .then((status) => {
-        const changed = this.cachedRuntime?.ready !== status.ready;
+        // re-broadcast on ANY material change (readiness OR which component
+        // is blocking), not just a ready flip — otherwise a tab that got an
+        // early hello keeps showing a stale setup stage forever
+        const prev = this.cachedRuntime;
+        const changed = !prev || prev.ready !== status.ready
+          || prev.detail.join("|") !== status.detail.join("|");
         this.cachedRuntime = status;
-        // if readiness flipped, tell everyone (the first hello may have been
-        // an optimistic "assume ready" before the check completed)
         if (changed) for (const s of this.sockets) this.sendHello(s);
         return status;
       })
@@ -280,7 +290,7 @@ export class AgentServer {
         this.jobs.get(msg.requestId)?.handle.cancel();
       }
 
-      const handle = startRenderJob(msg, (snapshot) => {
+      const emit = (snapshot: JobSnapshot) => {
         try {
           const tracked = this.jobs.get(msg.requestId);
           if (tracked) tracked.lastSnapshot = snapshot;
@@ -292,19 +302,30 @@ export class AgentServer {
           };
           this.broadcastJob(withPublicUrl);
           if (snapshot.status === "done") this.broadcastRenderList();
+          // drop finished jobs so the map doesn't grow unbounded over a
+          // long-running tray session
+          if (snapshot.status === "done" || snapshot.status === "error" || snapshot.status === "cancelled") {
+            this.jobs.delete(msg.requestId);
+          }
         } catch (err) {
           log.error(`error broadcasting progress for ${msg.requestId}:`, String(err));
         }
-      });
+      };
 
+      // Register the job placeholder BEFORE starting it. startRenderJob calls
+      // run() synchronously, and a synchronous early emit (e.g. empty
+      // segments) would otherwise fire against a job not yet in the map.
       this.jobs.set(msg.requestId, {
-        handle,
+        handle: { requestId: msg.requestId, cancel: () => {} },
         lastSnapshot: {
           requestId: msg.requestId, status: "queued", progress: 0,
           logs: [], warnings: [], error: null, videoUrl: null, outputExt: null,
           segmentsTotal: msg.segments.length, segmentsCached: 0,
         },
       });
+      const handle = startRenderJob(msg, emit);
+      const existing = this.jobs.get(msg.requestId);
+      if (existing) existing.handle = handle;
     } catch (err) {
       log.error(`failed to start render job ${msg.requestId}:`, String(err));
       this.broadcastJob({

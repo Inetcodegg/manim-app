@@ -118,13 +118,15 @@ function trustCertOnWindows(certPem: string, fingerprint: string): void {
 
   execFile("certutil", ["-addstore", "-user", "-f", "Root", tmpCert], (err, _stdout, stderr) => {
     try { fs.rmSync(tmpCert, { force: true }); } catch { /* temp file cleanup is best-effort */ }
+    // Write the marker either way. On a machine where certutil is missing or
+    // blocked, retrying the spawn on every single launch is pointless noise —
+    // the site's manual "Allow the render app" flow is the fallback. We'd
+    // rather try once and move on than fork a process each startup forever.
+    try { fs.writeFileSync(marker, fingerprint); } catch { /* marker is an optimization, not required */ }
     if (err) {
-      // not fatal — the site still offers the manual "Allow the render app"
-      // flow; this just means the automatic path didn't take on this machine
       log.warn(`could not auto-trust TLS cert (falling back to manual accept): ${stderr || err.message}`);
       return;
     }
-    try { fs.writeFileSync(marker, fingerprint); } catch { /* marker is an optimization, not required */ }
     log.info("TLS certificate added to the user's trusted store — browser will connect without a warning");
   });
 }

@@ -167,8 +167,12 @@ class CancelledError extends Error {}
  *  skip this entirely (see the caller). */
 async function concatSegments(clipPaths: string[], destPath: string, workDir: string): Promise<void> {
   const listFile = path.join(workDir, "concat_list.txt");
+  // ffmpeg's concat demuxer treats backslashes inside `file '...'` as escape
+  // sequences, so absolute Windows paths (C:\Users\…) get mangled and every
+  // multi-segment render fails at the concat step. Forward slashes work on
+  // Windows too, so normalize them before writing the list file.
   const listContent = clipPaths
-    .map((p) => `file '${p.replace(/'/g, "'\\''")}'`)
+    .map((p) => `file '${p.replace(/\\/g, "/").replace(/'/g, "'\\''")}'`)
     .join("\n");
   fs.writeFileSync(listFile, listContent, "utf8");
 
