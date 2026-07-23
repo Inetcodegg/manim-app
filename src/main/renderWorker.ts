@@ -69,8 +69,8 @@ function findOutput(mediaDir: string, ext: string): string | null {
   for (const kind of ["videos", "images"]) {
     const base = path.join(mediaDir, kind);
     if (!fs.existsSync(base)) continue;
-    const dir = walkFor(base, `output.${ext}`);
-    if (dir) return path.join(dir, `output.${ext}`);
+    const found = walkFor(base, `output.${ext}`);
+    if (found) return found;
   }
   return null;
 }

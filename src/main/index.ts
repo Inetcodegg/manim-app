@@ -171,13 +171,23 @@ function rebuildTrayMenu(): void {
     { type: "separator" },
     {
       label: "Quit",
-      click: async () => {
-        try {
-          await agent?.stop();
-        } catch (err) {
-          log.warn("error during shutdown:", String(err));
-        }
-        app.quit();
+      click: () => {
+        // Force a hard exit shortly no matter what — if agent.stop() hangs
+        // (a socket that won't close, a render mid-flight), the app must
+        // still quit rather than linger as an invisible tray-less process
+        // the user can't get rid of. app.exit() skips the normal quit
+        // lifecycle (and window-all-closed no-op), so it always terminates.
+        const hardExit = setTimeout(() => app.exit(0), 2000);
+        void (async () => {
+          try {
+            await agent?.stop();
+          } catch (err) {
+            log.warn("error during shutdown:", String(err));
+          } finally {
+            clearTimeout(hardExit);
+            app.exit(0);
+          }
+        })();
       },
     },
   ]);
