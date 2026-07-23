@@ -260,14 +260,17 @@ async function preparePython() {
 
   let manimOk = false;
   try {
-    const out = execFileSync(pythonExe, ["-c", "import manim, numpy; print('ok')"], { encoding: "utf8" });
+    // cv2 checked here too — VideoObject's compiled output (embedded video
+    // clips, per-frame ImageMobject.pixel_array swap) needs opencv-python
+    // at render time, same pin as the cloud renderer's Dockerfile
+    const out = execFileSync(pythonExe, ["-c", "import manim, numpy, cv2; print('ok')"], { encoding: "utf8" });
     manimOk = out.includes("ok");
   } catch {
     manimOk = false;
   }
   if (!manimOk) {
-    log("installing manim + numpy (this can take a few minutes)…");
-    execFileSync(pythonExe, ["-m", "pip", "install", "--no-warn-script-location", "manim==0.19.*", "numpy"], {
+    log("installing manim + numpy + opencv (this can take a few minutes)…");
+    execFileSync(pythonExe, ["-m", "pip", "install", "--no-warn-script-location", "manim==0.19.*", "numpy", "opencv-python-headless"], {
       stdio: "inherit",
     });
   } else {

@@ -205,8 +205,14 @@ function updateTrayTooltip(text: string): void {
 function showStatusWindow(): void {
   try {
     if (statusWindow && !statusWindow.isDestroyed()) {
+      // a hidden window that was minimized before hiding stays minimized on
+      // show(), so it never actually appears — restore first, then raise it
+      // above other windows so a second launch/tray click reliably surfaces it
+      if (statusWindow.isMinimized()) statusWindow.restore();
       statusWindow.show();
+      statusWindow.setAlwaysOnTop(true);
       statusWindow.focus();
+      statusWindow.setAlwaysOnTop(false);
       return;
     }
     statusWindow = new BrowserWindow({
