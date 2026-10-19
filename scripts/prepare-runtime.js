@@ -50,7 +50,7 @@ const FFMPEG_WIN_URL = "https://www.gyan.dev/ffmpeg/builds/ffmpeg-release-essent
 // Static builds with no installer step, one file per OS/arch.
 const FFMPEG_MAC_URL = "https://evermeet.cx/ffmpeg/getrelease/ffmpeg/zip";
 const FFMPEG_MAC_PROBE_URL = "https://evermeet.cx/ffmpeg/getrelease/ffprobe/zip";
-const FFMPEG_LINUX_URL = "https://johnvansickle.com/ffmpeg/releases/ffmpeg-release-amd64-static.tar.xz";
+const FFMPEG_LINUX_URL = "https://github.com/BtbN/FFmpeg-Builds/releases/download/latest/ffmpeg-master-latest-linux64-gpl.tar.xz";
 // A plain UA — some of these hosts (johnvansickle.com, evermeet.cx) 403
 // requests with no User-Agent header at all.
 const BROWSER_UA = "Mozilla/5.0 (manim-studio-render-agent build script)";
@@ -248,6 +248,17 @@ async function preparePython() {
     await preparePythonUnix(pythonDir, pythonExe);
   }
 
+  if (IS_MAC) {
+    // Standalone CPython embeds its builder's SDK path in sysconfig. Repair
+    // that metadata before isolated PEP-517 builds spawn their own compilers.
+    execFileSync(pythonExe, ["-c", String.raw`import importlib.util, os, pathlib, re, sysconfig
+p = pathlib.Path(importlib.util.find_spec(sysconfig._get_sysconfigdata_name()).origin)
+s = p.read_text()
+s = re.sub(r"/Applications/[^\s'\"]+\.sdk", os.environ["SDKROOT"], s)
+p.write_text(s)
+`], { stdio: "inherit" });
+  }
+
   // the embeddable Windows distribution's pip has no setuptools/wheel —
   // several manim dependencies (e.g. srt) ship no wheel and build from
   // sdist, which needs setuptools.build_meta as its build backend.
@@ -433,7 +444,7 @@ async function prepareFfmpegMac(ffmpegDir) {
 }
 
 async function prepareFfmpegLinux(ffmpegDir) {
-  const tarball = await ensureDownloaded(FFMPEG_LINUX_URL, "ffmpeg-release-amd64-static.tar.xz");
+  const tarball = await ensureDownloaded(FFMPEG_LINUX_URL, "ffmpeg-master-latest-linux64-gpl.tar.xz");
   const extractDir = path.join(RUNTIME_DIR, "_ffmpeg-extract");
   extractTar(tarball, extractDir);
   const found = findFileRecursive(extractDir, "ffmpeg");
