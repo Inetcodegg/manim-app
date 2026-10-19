@@ -34,6 +34,7 @@ jobs:
       - if: runner.os == 'macOS'
         run: brew install pkg-config cairo pango
       - run: npm ci
+      - run: npm run generate-firebase-config
       - run: npm run typecheck
       - run: npm run generate-icons
       - run: npm run prepare-runtime
