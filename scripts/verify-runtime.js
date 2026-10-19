@@ -18,10 +18,10 @@ fs.writeFileSync(path.join(diagnosticDir, 'probe.tex'), String.raw`\documentclas
 \begin{document}Math runtime $x^2$\end{document}`);
 execFileSync(path.join(tex, win ? 'latex.exe' : 'latex'), ['-interaction=nonstopmode', '-halt-on-error', 'probe.tex'], { cwd: diagnosticDir, env: environment, stdio: 'inherit', timeout: 120000 });
 execFileSync(python, ['-c', 'import manim, numpy, cv2, pydub; print("Bundled imports verified")'], { env: environment, stdio: 'inherit' });
-const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'manimlabs-runtime-gate-'));
+const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'manimlabs~ native-gate-'));
 const scene = path.join(directory, 'scene.py');
 fs.writeFileSync(scene, 'from manim import *\nclass RuntimeGate(Scene):\n    def construct(self):\n        self.play(Write(MathTex(r"\\frac{x^2}{\\sqrt{1+x}}")), run_time=0.5)\n        self.wait(0.5)\n');
-execFileSync(python, ['-m', 'manim', '--renderer=cairo', '--disable_caching', '-ql', '--media_dir', path.join(directory, 'media'), scene, 'RuntimeGate'], { env: environment, stdio: 'inherit', timeout: 180000 });
+execFileSync(python, ['-m', 'manim', '--renderer=cairo', '--disable_caching', '-ql', '--media_dir', 'media', 'scene.py', 'RuntimeGate'], { cwd: directory, env: environment, stdio: 'inherit', timeout: 180000 });
 const video = path.join(directory, 'media/videos/scene/480p15/RuntimeGate.mp4');
 if (!fs.existsSync(video) || fs.statSync(video).size < 1000) throw new Error('Native MathTex render produced no usable video');
 const probe = JSON.parse(execFileSync(path.join(ffmpeg, win ? 'ffprobe.exe' : 'ffprobe'), ['-v', 'error', '-show_streams', '-show_format', '-of', 'json', video], { env: environment, encoding: 'utf8' }));

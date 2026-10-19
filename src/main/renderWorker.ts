@@ -121,7 +121,8 @@ async function runSegment(
 
   const args = [
     "-m", "manim", "render",
-    "--media_dir", mediaDir,
+    // Relative paths keep TeX from interpreting Windows 8.3 names (RUNNER~1).
+    "--media_dir", "media",
     "-o", "output",
     ...(ext === "gif" ? ["--format", "gif"] : []),
     ...(ext === "webm" ? ["--transparent", "--format", "webm"] : []),
