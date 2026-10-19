@@ -48,8 +48,8 @@ const PYTHON_STANDALONE_RELEASES_API = "https://api.github.com/repos/astral-sh/p
 const TINYTEX_RELEASES_API = "https://api.github.com/repos/rstudio/tinytex-releases/releases/latest";
 const FFMPEG_WIN_URL = "https://www.gyan.dev/ffmpeg/builds/ffmpeg-release-essentials.zip";
 // Static builds with no installer step, one file per OS/arch.
-const FFMPEG_MAC_URL = "https://evermeet.cx/ffmpeg/ffmpeg-9.0.2.zip";
-const FFMPEG_MAC_PROBE_URL = "https://evermeet.cx/ffmpeg/ffprobe-9.0.2.zip";
+const FFMPEG_MAC_URL = "https://github.com/eugeneware/ffmpeg-static/releases/download/b6.1.1/ffmpeg-darwin-x64.gz";
+const FFMPEG_MAC_PROBE_URL = "https://github.com/eugeneware/ffmpeg-static/releases/download/b6.1.1/ffprobe-darwin-x64.gz";
 const FFMPEG_LINUX_URL = "https://github.com/BtbN/FFmpeg-Builds/releases/download/latest/ffmpeg-master-latest-linux64-gpl.tar.xz";
 // A plain UA — some of these hosts (johnvansickle.com, evermeet.cx) 403
 // requests with no User-Agent header at all.
@@ -428,18 +428,19 @@ async function prepareFfmpegWindows(ffmpegDir) {
 
 async function prepareFfmpegMac(ffmpegDir) {
   fs.mkdirSync(ffmpegDir, { recursive: true });
+  const { gunzipSync } = require("node:zlib");
   for (const [url, filename, binName] of [
-    [FFMPEG_MAC_URL, "ffmpeg-mac.zip", "ffmpeg"],
-    [FFMPEG_MAC_PROBE_URL, "ffprobe-mac.zip", "ffprobe"],
+    [FFMPEG_MAC_URL, "ffmpeg-b6.1.1-darwin-x64.gz", "ffmpeg"],
+    [FFMPEG_MAC_PROBE_URL, "ffprobe-b6.1.1-darwin-x64.gz", "ffprobe"],
   ]) {
-    const zip = await ensureDownloaded(url, filename);
-    const extractDir = path.join(RUNTIME_DIR, `_ffmpeg-extract-${binName}`);
-    extractZip(zip, extractDir);
-    const found = findFileRecursive(extractDir, binName);
-    if (!found) throw new Error(`Could not locate ${binName} inside the extracted evermeet.cx archive.`);
-    fs.copyFileSync(path.join(found, binName), path.join(ffmpegDir, binName));
+    const archive = await ensureDownloaded(url, filename);
+    fs.writeFileSync(path.join(ffmpegDir, binName), gunzipSync(fs.readFileSync(archive)));
     fs.chmodSync(path.join(ffmpegDir, binName), 0o755);
-    fs.rmSync(extractDir, { recursive: true, force: true });
+  }
+  const base = "https://github.com/eugeneware/ffmpeg-static/releases/download/b6.1.1";
+  for (const name of ["LICENSE", "README"]) {
+    const file = await ensureDownloaded(`${base}/darwin-x64.${name}`, `ffmpeg-b6.1.1-darwin-x64.${name}`);
+    fs.copyFileSync(file, path.join(ffmpegDir, name));
   }
 }
 
