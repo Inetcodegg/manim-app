@@ -12,6 +12,11 @@ const environment = { ...process.env, PATH: [ffmpeg, tex, process.env.PATH || ''
 for (const file of [python, path.join(tex, win ? 'latex.exe' : 'latex'), path.join(ffmpeg, win ? 'ffmpeg.exe' : 'ffmpeg')]) {
   fs.accessSync(file, win ? fs.constants.F_OK : fs.constants.X_OK);
 }
+// Exercise the bundled TeX binary directly: Manim suppresses its stdout on failure.
+const diagnosticDir = fs.mkdtempSync(path.join(os.tmpdir(), 'manimlabs-tex-gate-'));
+fs.writeFileSync(path.join(diagnosticDir, 'probe.tex'), String.raw`\documentclass{article}
+\begin{document}Math runtime $x^2$\end{document}`);
+execFileSync(path.join(tex, win ? 'latex.exe' : 'latex'), ['-interaction=nonstopmode', '-halt-on-error', 'probe.tex'], { cwd: diagnosticDir, env: environment, stdio: 'inherit', timeout: 120000 });
 execFileSync(python, ['-c', 'import manim, numpy, cv2, pydub; print("Bundled imports verified")'], { env: environment, stdio: 'inherit' });
 const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'manimlabs-runtime-gate-'));
 const scene = path.join(directory, 'scene.py');

@@ -396,6 +396,11 @@ function installLatexFromExtracted(found, extractDir, latexDir) {
       log(`tlmgr reported an error (continuing — some packages may already be present): ${err.message}`);
     }
   }
+  // Regenerate the relocatable runtime's formats rather than shipping archive
+  // caches from the builder's original installation path. Fail the build if
+  // provisioning is incomplete instead of publishing an unusable installer.
+  const fmtutil = path.join(binDir, IS_WINDOWS ? "fmtutil-sys.exe" : "fmtutil-sys");
+  execFileSync(fmtutil, ["--byfmt", "latex"], { stdio: "inherit", env: { ...process.env, PATH: [binDir, process.env.PATH || ""].join(path.delimiter) } });
 }
 
 async function prepareLatex() {
