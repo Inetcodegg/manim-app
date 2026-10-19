@@ -100,25 +100,18 @@ function download(url, destFile) {
   });
 }
 
-function fetchJson(url) {
-  return new Promise((resolve, reject) => {
-    // GitHub's API 403s requests with no User-Agent.
-    https.get(url, { headers: { "User-Agent": "manim-studio-render-agent-build" } }, (res) => {
-      if (res.statusCode !== 200) {
-        res.resume();
-        return reject(new Error(`GitHub API request failed (${res.statusCode}) for ${url}`));
-      }
-      let body = "";
-      res.on("data", (chunk) => (body += chunk));
-      res.on("end", () => {
-        try {
-          resolve(JSON.parse(body));
-        } catch (err) {
-          reject(err);
-        }
-      });
-    }).on("error", reject);
-  });
+async function fetchJson(url) {
+  for (let attempt = 0; attempt < 4; attempt++) {
+    try {
+      const response = await fetch(url, { headers: { "User-Agent": "ManimLabs-runtime-build" }, signal: AbortSignal.timeout(30000) });
+      if (!response.ok) throw new Error(`Runtime metadata request failed (${response.status})`);
+      return await response.json();
+    } catch (error) {
+      if (attempt === 3) throw error;
+      log(`metadata connection interrupted; retry ${attempt + 1}/3`);
+      await new Promise(resolve => setTimeout(resolve, 1000 * (attempt + 1)));
+    }
+  }
 }
 
 async function ensureDownloaded(url, filename) {
@@ -129,7 +122,14 @@ async function ensureDownloaded(url, filename) {
   }
   log(`downloading ${filename}`);
   const tmp = dest + ".part";
-  await download(url, tmp);
+  for (let attempt = 0; ; attempt++) {
+    try { await download(url, tmp); break; } catch (error) {
+      if (attempt >= 3) throw error;
+      fs.rmSync(tmp, { force: true });
+      log(`download interrupted; retry ${attempt + 1}/3`);
+      await new Promise(resolve => setTimeout(resolve, 1000 * (attempt + 1)));
+    }
+  }
   fs.renameSync(tmp, dest);
   return dest;
 }
@@ -285,7 +285,7 @@ async function preparePython() {
   // means the shipped .pyc files are already present, so first import is fast.
   log("precompiling Python bytecode (makes first import fast on the user's machine)…");
   try {
-    execFileSync(pythonExe, ["-m", "compileall", "-q", "-j", "0", path.join(pythonDir, "Lib", "site-packages")], {
+    execFileSync(pythonExe, ["-c", "import compileall,sysconfig; compileall.compile_dir(sysconfig.get_paths()['purelib'],quiet=1)"], {
       stdio: "inherit",
     });
   } catch (err) {
@@ -464,6 +464,12 @@ async function prepareFfmpeg() {
 async function main() {
   if (!["win32", "darwin", "linux"].includes(PLATFORM) || process.arch !== "x64") {
     throw new Error("This bundled release supports x64 Windows, macOS and Linux. ARM64 requires native FFmpeg/TeX runtime verification before packaging.");
+  }
+  if (IS_MAC) {
+    const sdk = execFileSync("xcrun", ["--show-sdk-path"], { encoding: "utf8" }).trim();
+    process.env.SDKROOT = sdk;
+    process.env.LDSHARED = `clang -bundle -undefined dynamic_lookup -isysroot "${sdk}"`;
+    process.env.CFLAGS = `${process.env.CFLAGS || ""} -isysroot "${sdk}"`;
   }
   log(`building runtime for platform: ${PLATFORM} (${process.arch})`);
   fs.mkdirSync(RUNTIME_DIR, { recursive: true });
