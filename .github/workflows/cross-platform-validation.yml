@@ -36,6 +36,7 @@ jobs:
       - run: npm ci
       - run: npm run generate-firebase-config
       - run: npm run typecheck
+      - run: npm run check:security
       - run: npm run generate-icons
       - run: npm run prepare-runtime
       - run: npm run check:runtime

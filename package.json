@@ -22,7 +22,8 @@
     "dist:mac": "npm run build && electron-builder --mac",
     "dist:linux": "npm run build && electron-builder --linux",
     "postinstall": "electron-builder install-app-deps",
-    "check:runtime": "node scripts/verify-runtime.js"
+    "check:runtime": "node scripts/verify-runtime.js",
+    "check:security": "node scripts/agent-origin-acceptance.js"
   },
   "dependencies": {
     "electron-log": "^5.4.4",

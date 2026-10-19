@@ -1,3 +1,5 @@
+import { app } from "electron";
+import { isTrustedAgentOrigin } from "../shared/trustedOrigins";
 import https from "node:https";
 import { WebSocketServer, type WebSocket } from "ws";
 import { startRenderJob, type RenderJobHandle } from "./renderWorker";
@@ -79,7 +81,7 @@ export class AgentServer {
     await startVideoServer(this.videoRegistry, VIDEO_PORT, this.tls);
 
     this.httpsServer = https.createServer({ key: this.tls.keyPem, cert: this.tls.certPem });
-    this.wss = new WebSocketServer({ server: this.httpsServer });
+    this.wss = new WebSocketServer({ server: this.httpsServer, verifyClient: (info: { origin: string }) => isTrustedAgentOrigin(info.origin, app.isPackaged) });
 
     await new Promise<void>((resolve, reject) => {
       this.httpsServer!.on("error", reject);
