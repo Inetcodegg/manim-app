@@ -40,7 +40,7 @@ const GET_PIP_URL = "https://bootstrap.pypa.io/get-pip.py";
 // astral-sh/python-build-standalone's "install_only" builds instead — a
 // prebuilt, relocatable CPython tarball with pip already included. Resolved
 // dynamically (like TinyTeX below) since release tags are date-stamped.
-const PYTHON_STANDALONE_RELEASES_API = "https://api.github.com/repos/astral-sh/python-build-standalone/releases/latest";
+const PYTHON_STANDALONE_RELEASES_API = "https://api.github.com/repos/astral-sh/python-build-standalone/releases/tags/20241016";
 // TinyTeX's Windows-only artifact is a self-extracting installer .exe now,
 // not a plain archive, and every release's asset names are versioned (no
 // stable "latest/download/<fixed-name>" alias) — so we resolve the actual
@@ -202,7 +202,7 @@ async function preparePythonUnix(pythonDir, pythonExe) {
     log("python already prepared, checking manim…");
     return;
   }
-  log("resolving latest python-build-standalone release…");
+  log("resolving pinned python-build-standalone release…");
   const release = await fetchJson(PYTHON_STANDALONE_RELEASES_API);
   const archSuffix = IS_MAC
     ? (process.arch === "arm64" ? "aarch64-apple-darwin" : "x86_64-apple-darwin")
@@ -222,9 +222,9 @@ async function preparePythonUnix(pythonDir, pythonExe) {
   // top-level "python/" dir with bin/, lib/, include/ etc. already laid
   // out relocatably — copy straight to runtime/python.
   const found = findFileRecursive(extractDir, "python3") || path.join(extractDir, "python", "bin");
-  const distRoot = path.resolve(found, "..", "..");
+  const distRoot = path.resolve(found, "..");
   fs.rmSync(pythonDir, { recursive: true, force: true });
-  fs.cpSync(distRoot, pythonDir, { recursive: true });
+  fs.cpSync(distRoot, pythonDir, { recursive: true, verbatimSymlinks: true });
   fs.rmSync(extractDir, { recursive: true, force: true });
   // the tarball's python3 binary may be a version-suffixed symlink
   // (python3.12) rather than existing at bin/python3 directly.
@@ -351,7 +351,7 @@ async function prepareLatexUnix(latexDir) {
 function installLatexFromExtracted(found, extractDir, latexDir) {
   const distroRoot = path.resolve(found, "..", "..");
   fs.rmSync(latexDir, { recursive: true, force: true });
-  fs.cpSync(distroRoot, latexDir, { recursive: true });
+  fs.cpSync(distroRoot, latexDir, { recursive: true, verbatimSymlinks: true });
   fs.rmSync(extractDir, { recursive: true, force: true });
 
   const binDir = path.join(latexDir, "bin", LATEX_BIN_SUBDIR);
@@ -462,6 +462,9 @@ async function prepareFfmpeg() {
 }
 
 async function main() {
+  if (!["win32", "darwin", "linux"].includes(PLATFORM) || process.arch !== "x64") {
+    throw new Error("This bundled release supports x64 Windows, macOS and Linux. ARM64 requires native FFmpeg/TeX runtime verification before packaging.");
+  }
   log(`building runtime for platform: ${PLATFORM} (${process.arch})`);
   fs.mkdirSync(RUNTIME_DIR, { recursive: true });
   fs.mkdirSync(DOWNLOAD_CACHE, { recursive: true });

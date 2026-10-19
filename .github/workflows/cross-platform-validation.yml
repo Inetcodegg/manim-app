@@ -1,0 +1,50 @@
+name: Validate native platform installers
+on:
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - "scripts/prepare-runtime.js"
+      - "scripts/verify-runtime.js"
+      - "package.json"
+      - ".github/workflows/cross-platform-validation.yml"
+permissions:
+  contents: read
+jobs:
+  native-runtime:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: windows-2022
+            target: win
+          - os: macos-15-intel
+            target: mac
+          - os: ubuntu-24.04
+            target: linux
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y pkg-config libcairo2-dev libpango1.0-dev libfuse2t64
+      - if: runner.os == 'macOS'
+        run: brew install pkg-config cairo pango
+      - run: npm ci
+      - run: npm run typecheck
+      - run: npm run generate-icons
+      - run: npm run prepare-runtime
+      - run: npm run check:runtime
+      - run: npm run dist:${{ matrix.target }} -- --publish never
+      - uses: actions/upload-artifact@v4
+        with:
+          name: verified-${{ matrix.target }}-x64
+          path: |
+            release/*.exe
+            release/*.dmg
+            release/*.AppImage
+          if-no-files-found: error
+          retention-days: 14

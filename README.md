@@ -1,6 +1,6 @@
-# Manim Studio Render Agent
+# ManimLabs Render Agent
 
-A Windows desktop companion for [Manim Studio](https://manim-std.vercel.app):
+A desktop companion for [ManimLabs](https://www.manimlabs.com):
 it runs Manim **on the user's own machine** — with Python, Manim, LaTeX, and
 FFmpeg all bundled inside the installer — and connects to the website over an
 encrypted local WebSocket so the browser can send it a compiled scene and get
@@ -269,3 +269,13 @@ via `prepare-runtime.js`) — never a slower first run for the user.
   banner, and the last ~200 log lines.
 - Tray icon → **Verify install** — re-runs the functional runtime check
   on demand (useful after an antivirus quarantine or a disk issue).
+
+## Platform release validation
+
+The x64 Windows, macOS and Linux packaging paths are implemented. A release is verified only after `npm run prepare-runtime`, `npm run check:runtime` and its platform packaging command pass on that operating system. The cross-platform-validation workflow performs a real bundled MathTex/Write video render before uploading installers; it never publishes a GitHub release.
+
+Python 3.12.7 Unix archives are resolved from the pinned 20241016 standalone release. Runtime copying preserves relative symlinks, and the Python distribution root is its `bin` directory's parent. macOS and Linux artifact extensions are platform-specific. Run `npm run generate-icons` on the target OS before packaging.
+
+ARM64 packaging is intentionally rejected until a native FFmpeg/TeX bundle and real native render acceptance are available. Existing x64 runtime binaries must not be labeled ARM64. macOS distribution still requires owner-managed code signing/notarization before claiming a trusted public installer. Browser certificate trust on Linux/macOS remains an explicit local trust step; the app does not silently modify the system trust store.
+
+2026-10-19 local evidence: Windows bundled Manim 0.19.2 imports, MathTex Write, FFmpeg video stream and one-second timing passed. TypeScript and the Electron application build passed. Linux/macOS native results must come from the target-OS CI jobs, not this Windows session.
