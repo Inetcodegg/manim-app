@@ -40,7 +40,7 @@ const GET_PIP_URL = "https://bootstrap.pypa.io/get-pip.py";
 // astral-sh/python-build-standalone's "install_only" builds instead — a
 // prebuilt, relocatable CPython tarball with pip already included. Resolved
 // dynamically (like TinyTeX below) since release tags are date-stamped.
-const PYTHON_STANDALONE_RELEASES_API = "https://api.github.com/repos/astral-sh/python-build-standalone/releases/latest";
+const PYTHON_STANDALONE_RELEASES_API = "https://api.github.com/repos/astral-sh/python-build-standalone/releases/tags/20241016";
 // TinyTeX's Windows-only artifact is a self-extracting installer .exe now,
 // not a plain archive, and every release's asset names are versioned (no
 // stable "latest/download/<fixed-name>" alias) — so we resolve the actual
@@ -48,9 +48,9 @@ const PYTHON_STANDALONE_RELEASES_API = "https://api.github.com/repos/astral-sh/p
 const TINYTEX_RELEASES_API = "https://api.github.com/repos/rstudio/tinytex-releases/releases/latest";
 const FFMPEG_WIN_URL = "https://www.gyan.dev/ffmpeg/builds/ffmpeg-release-essentials.zip";
 // Static builds with no installer step, one file per OS/arch.
-const FFMPEG_MAC_URL = "https://evermeet.cx/ffmpeg/getrelease/ffmpeg/zip";
-const FFMPEG_MAC_PROBE_URL = "https://evermeet.cx/ffmpeg/getrelease/ffprobe/zip";
-const FFMPEG_LINUX_URL = "https://johnvansickle.com/ffmpeg/releases/ffmpeg-release-amd64-static.tar.xz";
+const FFMPEG_MAC_URL = "https://github.com/eugeneware/ffmpeg-static/releases/download/b6.1.1/ffmpeg-darwin-x64.gz";
+const FFMPEG_MAC_PROBE_URL = "https://github.com/eugeneware/ffmpeg-static/releases/download/b6.1.1/ffprobe-darwin-x64.gz";
+const FFMPEG_LINUX_URL = "https://github.com/BtbN/FFmpeg-Builds/releases/download/latest/ffmpeg-master-latest-linux64-gpl.tar.xz";
 // A plain UA — some of these hosts (johnvansickle.com, evermeet.cx) 403
 // requests with no User-Agent header at all.
 const BROWSER_UA = "Mozilla/5.0 (manim-studio-render-agent build script)";
@@ -100,25 +100,18 @@ function download(url, destFile) {
   });
 }
 
-function fetchJson(url) {
-  return new Promise((resolve, reject) => {
-    // GitHub's API 403s requests with no User-Agent.
-    https.get(url, { headers: { "User-Agent": "manim-studio-render-agent-build" } }, (res) => {
-      if (res.statusCode !== 200) {
-        res.resume();
-        return reject(new Error(`GitHub API request failed (${res.statusCode}) for ${url}`));
-      }
-      let body = "";
-      res.on("data", (chunk) => (body += chunk));
-      res.on("end", () => {
-        try {
-          resolve(JSON.parse(body));
-        } catch (err) {
-          reject(err);
-        }
-      });
-    }).on("error", reject);
-  });
+async function fetchJson(url) {
+  for (let attempt = 0; attempt < 4; attempt++) {
+    try {
+      const response = await fetch(url, { headers: { "User-Agent": "ManimLabs-runtime-build" }, signal: AbortSignal.timeout(30000) });
+      if (!response.ok) throw new Error(`Runtime metadata request failed (${response.status})`);
+      return await response.json();
+    } catch (error) {
+      if (attempt === 3) throw error;
+      log(`metadata connection interrupted; retry ${attempt + 1}/3`);
+      await new Promise(resolve => setTimeout(resolve, 1000 * (attempt + 1)));
+    }
+  }
 }
 
 async function ensureDownloaded(url, filename) {
@@ -129,7 +122,14 @@ async function ensureDownloaded(url, filename) {
   }
   log(`downloading ${filename}`);
   const tmp = dest + ".part";
-  await download(url, tmp);
+  for (let attempt = 0; ; attempt++) {
+    try { await download(url, tmp); break; } catch (error) {
+      if (attempt >= 3) throw error;
+      fs.rmSync(tmp, { force: true });
+      log(`download interrupted; retry ${attempt + 1}/3`);
+      await new Promise(resolve => setTimeout(resolve, 1000 * (attempt + 1)));
+    }
+  }
   fs.renameSync(tmp, dest);
   return dest;
 }
@@ -202,7 +202,7 @@ async function preparePythonUnix(pythonDir, pythonExe) {
     log("python already prepared, checking manim…");
     return;
   }
-  log("resolving latest python-build-standalone release…");
+  log("resolving pinned python-build-standalone release…");
   const release = await fetchJson(PYTHON_STANDALONE_RELEASES_API);
   const archSuffix = IS_MAC
     ? (process.arch === "arm64" ? "aarch64-apple-darwin" : "x86_64-apple-darwin")
@@ -222,9 +222,9 @@ async function preparePythonUnix(pythonDir, pythonExe) {
   // top-level "python/" dir with bin/, lib/, include/ etc. already laid
   // out relocatably — copy straight to runtime/python.
   const found = findFileRecursive(extractDir, "python3") || path.join(extractDir, "python", "bin");
-  const distRoot = path.resolve(found, "..", "..");
+  const distRoot = path.resolve(found, "..");
   fs.rmSync(pythonDir, { recursive: true, force: true });
-  fs.cpSync(distRoot, pythonDir, { recursive: true });
+  fs.cpSync(distRoot, pythonDir, { recursive: true, verbatimSymlinks: true });
   fs.rmSync(extractDir, { recursive: true, force: true });
   // the tarball's python3 binary may be a version-suffixed symlink
   // (python3.12) rather than existing at bin/python3 directly.
@@ -246,6 +246,17 @@ async function preparePython() {
     await preparePythonWindows(pythonDir, pythonExe);
   } else {
     await preparePythonUnix(pythonDir, pythonExe);
+  }
+
+  if (IS_MAC) {
+    // Standalone CPython embeds its builder's SDK path in sysconfig. Repair
+    // that metadata before isolated PEP-517 builds spawn their own compilers.
+    execFileSync(pythonExe, ["-c", String.raw`import importlib.util, os, pathlib, re, sysconfig
+p = pathlib.Path(importlib.util.find_spec(sysconfig._get_sysconfigdata_name()).origin)
+s = p.read_text()
+s = re.sub(r"/Applications/[^\s'\"]+\.sdk", os.environ["SDKROOT"], s)
+p.write_text(s)
+`], { stdio: "inherit" });
   }
 
   // the embeddable Windows distribution's pip has no setuptools/wheel —
@@ -285,7 +296,7 @@ async function preparePython() {
   // means the shipped .pyc files are already present, so first import is fast.
   log("precompiling Python bytecode (makes first import fast on the user's machine)…");
   try {
-    execFileSync(pythonExe, ["-m", "compileall", "-q", "-j", "0", path.join(pythonDir, "Lib", "site-packages")], {
+    execFileSync(pythonExe, ["-c", "import compileall,sysconfig; compileall.compile_dir(sysconfig.get_paths()['purelib'],quiet=1)"], {
       stdio: "inherit",
     });
   } catch (err) {
@@ -351,7 +362,7 @@ async function prepareLatexUnix(latexDir) {
 function installLatexFromExtracted(found, extractDir, latexDir) {
   const distroRoot = path.resolve(found, "..", "..");
   fs.rmSync(latexDir, { recursive: true, force: true });
-  fs.cpSync(distroRoot, latexDir, { recursive: true });
+  fs.cpSync(distroRoot, latexDir, { recursive: true, verbatimSymlinks: true });
   fs.rmSync(extractDir, { recursive: true, force: true });
 
   const binDir = path.join(latexDir, "bin", LATEX_BIN_SUBDIR);
@@ -385,6 +396,11 @@ function installLatexFromExtracted(found, extractDir, latexDir) {
       log(`tlmgr reported an error (continuing — some packages may already be present): ${err.message}`);
     }
   }
+  // Regenerate the relocatable runtime's formats rather than shipping archive
+  // caches from the builder's original installation path. Fail the build if
+  // provisioning is incomplete instead of publishing an unusable installer.
+  const fmtutil = path.join(binDir, IS_WINDOWS ? "fmtutil-sys.exe" : "fmtutil-sys");
+  execFileSync(fmtutil, ["--byfmt", "latex"], { stdio: "inherit", env: { ...process.env, PATH: [binDir, process.env.PATH || ""].join(path.delimiter) } });
 }
 
 async function prepareLatex() {
@@ -417,23 +433,24 @@ async function prepareFfmpegWindows(ffmpegDir) {
 
 async function prepareFfmpegMac(ffmpegDir) {
   fs.mkdirSync(ffmpegDir, { recursive: true });
+  const { gunzipSync } = require("node:zlib");
   for (const [url, filename, binName] of [
-    [FFMPEG_MAC_URL, "ffmpeg-mac.zip", "ffmpeg"],
-    [FFMPEG_MAC_PROBE_URL, "ffprobe-mac.zip", "ffprobe"],
+    [FFMPEG_MAC_URL, "ffmpeg-b6.1.1-darwin-x64.gz", "ffmpeg"],
+    [FFMPEG_MAC_PROBE_URL, "ffprobe-b6.1.1-darwin-x64.gz", "ffprobe"],
   ]) {
-    const zip = await ensureDownloaded(url, filename);
-    const extractDir = path.join(RUNTIME_DIR, `_ffmpeg-extract-${binName}`);
-    extractZip(zip, extractDir);
-    const found = findFileRecursive(extractDir, binName);
-    if (!found) throw new Error(`Could not locate ${binName} inside the extracted evermeet.cx archive.`);
-    fs.copyFileSync(path.join(found, binName), path.join(ffmpegDir, binName));
+    const archive = await ensureDownloaded(url, filename);
+    fs.writeFileSync(path.join(ffmpegDir, binName), gunzipSync(fs.readFileSync(archive)));
     fs.chmodSync(path.join(ffmpegDir, binName), 0o755);
-    fs.rmSync(extractDir, { recursive: true, force: true });
+  }
+  const base = "https://github.com/eugeneware/ffmpeg-static/releases/download/b6.1.1";
+  for (const name of ["LICENSE", "README"]) {
+    const file = await ensureDownloaded(`${base}/darwin-x64.${name}`, `ffmpeg-b6.1.1-darwin-x64.${name}`);
+    fs.copyFileSync(file, path.join(ffmpegDir, name));
   }
 }
 
 async function prepareFfmpegLinux(ffmpegDir) {
-  const tarball = await ensureDownloaded(FFMPEG_LINUX_URL, "ffmpeg-release-amd64-static.tar.xz");
+  const tarball = await ensureDownloaded(FFMPEG_LINUX_URL, "ffmpeg-master-latest-linux64-gpl.tar.xz");
   const extractDir = path.join(RUNTIME_DIR, "_ffmpeg-extract");
   extractTar(tarball, extractDir);
   const found = findFileRecursive(extractDir, "ffmpeg");
@@ -462,6 +479,15 @@ async function prepareFfmpeg() {
 }
 
 async function main() {
+  if (!["win32", "darwin", "linux"].includes(PLATFORM) || process.arch !== "x64") {
+    throw new Error("This bundled release supports x64 Windows, macOS and Linux. ARM64 requires native FFmpeg/TeX runtime verification before packaging.");
+  }
+  if (IS_MAC) {
+    const sdk = execFileSync("xcrun", ["--show-sdk-path"], { encoding: "utf8" }).trim();
+    process.env.SDKROOT = sdk;
+    process.env.LDSHARED = `clang -bundle -undefined dynamic_lookup -isysroot "${sdk}"`;
+    process.env.CFLAGS = `${process.env.CFLAGS || ""} -isysroot "${sdk}"`;
+  }
   log(`building runtime for platform: ${PLATFORM} (${process.arch})`);
   fs.mkdirSync(RUNTIME_DIR, { recursive: true });
   fs.mkdirSync(DOWNLOAD_CACHE, { recursive: true });

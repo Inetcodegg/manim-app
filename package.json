@@ -2,7 +2,7 @@
   "name": "manim-studio-render-agent",
   "productName": "Manim Studio Render Agent",
   "version": "1.1.5",
-  "description": "Local render agent for Manim Studio — runs Manim on your own machine and connects to manim-std.vercel.app over a local WebSocket.",
+  "description": "Local ManimLabs render agent with bundled Python, LaTeX and FFmpeg.",
   "private": true,
   "main": "dist/main/index.js",
   "author": "Manim Studio",
@@ -21,7 +21,9 @@
     "dist:win": "npm run build && electron-builder --win",
     "dist:mac": "npm run build && electron-builder --mac",
     "dist:linux": "npm run build && electron-builder --linux",
-    "postinstall": "electron-builder install-app-deps"
+    "postinstall": "electron-builder install-app-deps",
+    "check:runtime": "node scripts/verify-runtime.js",
+    "check:security": "node scripts/agent-origin-acceptance.js"
   },
   "dependencies": {
     "electron-log": "^5.4.4",
@@ -49,7 +51,6 @@
   "build": {
     "appId": "com.manimstudio.renderagent",
     "productName": "Manim Studio Render Agent",
-    "artifactName": "Manim-Studio-Render-Agent-Setup-${version}.exe",
     "directories": {
       "output": "release",
       "buildResources": "build"
@@ -76,7 +77,8 @@
           ]
         }
       ],
-      "icon": "build/icon.ico"
+      "icon": "build/icon.ico",
+      "artifactName": "ManimLabs-Render-Agent-Setup-${version}-${arch}.${ext}"
     },
     "nsis": {
       "oneClick": false,
@@ -92,13 +94,13 @@
         {
           "target": "dmg",
           "arch": [
-            "x64",
-            "arm64"
+            "x64"
           ]
         }
       ],
       "icon": "build/icon.icns",
-      "category": "public.app-category.education"
+      "category": "public.app-category.education",
+      "artifactName": "ManimLabs-Render-Agent-${version}-macOS-${arch}.${ext}"
     },
     "linux": {
       "target": [
@@ -110,7 +112,8 @@
         }
       ],
       "icon": "build/icon.png",
-      "category": "Education"
+      "category": "Education",
+      "artifactName": "ManimLabs-Render-Agent-${version}-Linux-${arch}.${ext}"
     }
   }
 }
