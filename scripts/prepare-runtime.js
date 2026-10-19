@@ -48,8 +48,8 @@ const PYTHON_STANDALONE_RELEASES_API = "https://api.github.com/repos/astral-sh/p
 const TINYTEX_RELEASES_API = "https://api.github.com/repos/rstudio/tinytex-releases/releases/latest";
 const FFMPEG_WIN_URL = "https://www.gyan.dev/ffmpeg/builds/ffmpeg-release-essentials.zip";
 // Static builds with no installer step, one file per OS/arch.
-const FFMPEG_MAC_URL = "https://evermeet.cx/ffmpeg/getrelease/ffmpeg/zip";
-const FFMPEG_MAC_PROBE_URL = "https://evermeet.cx/ffmpeg/getrelease/ffprobe/zip";
+const FFMPEG_MAC_URL = "https://evermeet.cx/ffmpeg/ffmpeg-9.0.2.zip";
+const FFMPEG_MAC_PROBE_URL = "https://evermeet.cx/ffmpeg/ffprobe-9.0.2.zip";
 const FFMPEG_LINUX_URL = "https://github.com/BtbN/FFmpeg-Builds/releases/download/latest/ffmpeg-master-latest-linux64-gpl.tar.xz";
 // A plain UA — some of these hosts (johnvansickle.com, evermeet.cx) 403
 // requests with no User-Agent header at all.
